@@ -1,4 +1,3 @@
-# 修改默认IP & 固件名称 & 编译署名和时间
 # 修改默认IP & 固件名称 & 移除编译署名和时间
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='LiBwrt'/g" package/base-files/files/bin/config_generate
