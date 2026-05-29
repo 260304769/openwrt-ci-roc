@@ -31,6 +31,24 @@ rm -rf feeds/packages/net/nginx
 rm -rf feeds/packages/net/frp
 rm -rf feeds/packages/lang/golang
 
+	# 删除本地可能存在的不同名称的软件包
+	for NAME in "${PKG_LIST[@]}"; do
+		# 查找匹配的目录
+		echo "Search directory: $NAME"
+		local FOUND_DIRS=$(find ../feeds/luci/ ../feeds/packages/ -maxdepth 3 -type d -iname "*$NAME*" 2>/dev/null)
+
+		# 删除找到的目录
+		if [ -n "$FOUND_DIRS" ]; then
+			while read -r DIR; do
+				rm -rf "$DIR"
+				echo "Delete directory: $DIR"
+			done <<< "$FOUND_DIRS"
+		else
+			echo "Not fonud directory: $NAME"
+		fi
+	done
+
+
 # Git稀疏克隆，只克隆指定目录到本地
 function git_sparse_clone() {
   branch="$1" repourl="$2" && shift 2
@@ -79,6 +97,46 @@ rm -rf feeds/luci/applications/luci-app-openclash
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
 git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
+
+#修改qca-nss-drv启动顺序
+NSS_DRV="../feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
+if [ -f "$NSS_DRV" ]; then
+	echo " "
+
+	sed -i 's/START=.*/START=85/g' $NSS_DRV
+
+	cd $PKG_PATH && echo "qca-nss-drv has been fixed!"
+fi
+
+#修改qca-nss-pbuf启动顺序
+NSS_PBUF="./kernel/mac80211/files/qca-nss-pbuf.init"
+if [ -f "$NSS_PBUF" ]; then
+	echo " "
+
+	sed -i 's/START=.*/START=86/g' $NSS_PBUF
+
+	cd $PKG_PATH && echo "qca-nss-pbuf has been fixed!"
+fi
+
+#修复TailScale配置文件冲突
+TS_FILE=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/tailscale/Makefile")
+if [ -f "$TS_FILE" ]; then
+	echo " "
+
+	sed -i '/\/files/d' $TS_FILE
+
+	cd $PKG_PATH && echo "tailscale has been fixed!"
+fi
+
+#修复Rust编译失败
+RUST_FILE=$(find ../feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile")
+if [ -f "$RUST_FILE" ]; then
+	echo " "
+
+	sed -i 's/ci-llvm=true/ci-llvm=false/g' $RUST_FILE
+
+	cd $PKG_PATH && echo "rust has been fixed!"
+fi
 
 # 清理 PassWall 的 chnlist 规则文件
 echo "baidu.com"  > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist
