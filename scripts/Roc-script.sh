@@ -116,15 +116,25 @@ else
     yellow "⚠️ feeds/nss_packages not found, skip NSS patches"
 fi
 
-#9.ath11k启动优先级
+#9.ath11k启动优先级（创建缺失的init脚本）
 green "===== Fix ath11k start order ====="
-if [ -f "package/kernel/ath11k/files/ath11k.init" ]; then
-    sed -i 's/START=.*/START=60/' package/kernel/ath11k/files/ath11k.init && green "✓ ath11k START=60"
-elif [ -f "package/kernel/mac80211/files/ath11k.init" ]; then
-    sed -i 's/START=.*/START=60/' package/kernel/mac80211/files/ath11k.init && green "✓ ath11k START=60 (mac80211 path)"
-else
-    yellow "⚠️ ath11k.init not found, skip"
-fi
+mkdir -p package/kernel/ath11k/files
+cat > package/kernel/ath11k/files/ath11k.init << 'EOF'
+#!/bin/sh /etc/rc.common
+
+START=60
+
+start() {
+    modprobe ath11k_pci 2>/dev/null || true
+    sleep 1
+}
+
+stop() {
+    rmmod ath11k_pci 2>/dev/null || true
+}
+EOF
+chmod +x package/kernel/ath11k/files/ath11k.init 2>/dev/null || true
+green "✓ ath11k init script created (START=60)"
 
 #10.编译容错
 green "===== Fix compile issues ====="
@@ -137,7 +147,12 @@ RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 # ===================== 11. 修复无 IP 分配问题 =====================
 green "===== Fix IP allocation issue ====="
 
-# 11.1 修复网络默认配置
+# 11.1 创建必要的目录
+mkdir -p package/base-files/files/etc/config
+mkdir -p package/base-files/files/etc/uci-defaults
+mkdir -p package/base-files/files/etc/init.d
+
+# 11.2 修复网络默认配置
 cat > package/base-files/files/etc/config/network << 'EOF'
 config interface 'loopback'
     option device 'lo'
@@ -170,7 +185,7 @@ config interface 'wan6'
 EOF
 green "✓ Network config created"
 
-# 11.2 修复 DHCP 配置
+# 11.3 修复 DHCP 配置
 cat > package/base-files/files/etc/config/dhcp << 'EOF'
 config dnsmasq
     option domainneeded '1'
@@ -215,14 +230,7 @@ config odhcpd 'odhcpd'
 EOF
 green "✓ DHCP config created"
 
-# 11.3 修复 NSS DP 驱动接口绑定
-NSS_DP_INIT="feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init"
-if [ -f "$NSS_DP_INIT" ]; then
-    sed -i 's/insmod qca-nss-dp/insmod qca-nss-dp eth_offload_mode=1/g' "$NSS_DP_INIT"
-    green "✓ NSS DP offload mode fixed"
-fi
-
-# 11.4 添加 NSS 等待脚本（确保 NSS 就绪后再启动网络）
+# 11.4 添加 NSS 等待脚本
 cat > package/base-files/files/etc/init.d/nss-wait << 'EOF'
 #!/bin/sh /etc/rc.common
 
@@ -251,26 +259,37 @@ green "✓ NSS wait script added"
 # 11.5 添加 uci-defaults 修复脚本
 cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
 #!/bin/sh
-# 修复 NSS 网络接口
-
-# 等待 NSS 驱动加载完成
 sleep 2
-
-# 确保桥接接口正确
 [ -d /sys/class/net/br-lan ] || brctl addbr br-lan
 brctl addif br-lan eth0 2>/dev/null || true
 ifconfig eth0 up
-
-# 重启网络服务以应用配置
 /etc/init.d/network restart
 /etc/init.d/dnsmasq restart
-
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix 2>/dev/null || true
 green "✓ NSS uci-defaults script added"
 
-# 11.6 修复 .config 格式（防止 missing separator）
+# 11.6 创建基础无线配置
+cat > package/base-files/files/etc/config/wireless << 'EOF'
+config wifi-device 'radio0'
+    option type 'mac80211'
+    option path 'platform/ahb/10000000.wifi'
+    option channel 'auto'
+    option band '5g'
+    option htmode 'HE80'
+    option cell_density '0'
+
+config wifi-iface 'default_radio0'
+    option device 'radio0'
+    option network 'lan'
+    option mode 'ap'
+    option ssid 'OpenWrt'
+    option encryption 'none'
+EOF
+green "✓ Wireless config created"
+
+# 11.7 修复 .config 格式
 green "===== Fix .config format ====="
 cd $OPENWRT_PATH
 
@@ -295,8 +314,8 @@ echo ""
 green "===== AX5 IPQ6018 512M 补丁全部完成 ====="
 echo ""
 echo "📌 已修复的问题："
-echo "   ✅ NSS 硬件加速配置"
-echo "   ✅ ath11k 无线驱动"
+echo "   ✅ NSS 硬件加速配置 (START=45/50)"
+echo "   ✅ ath11k 无线驱动 (init脚本已创建)"
 echo "   ✅ 网络 IP 分配问题"
 echo "   ✅ DHCP 服务配置"
 echo "   ✅ .config 格式错误"
