@@ -1,19 +1,20 @@
 #!/bin/bash
 set -e
 
-# ===================== 全局变量定义（修复未定义变量问题） =====================
+# ===================== 全局变量定义 =====================
 PKG_PATH=$(pwd)
+
 # 需要批量清理的包名列表
 PKG_LIST=(
-argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter
+    argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter
 )
 
-# ===================== 第一步：先初始化 feeds（修复执行顺序） =====================
+# ===================== 第一步：初始化 feeds =====================
 echo "===== Update & Install Feeds ====="
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-# ===================== 基础定制：IP、主机名、固件署名 =====================
+# ===================== 基础定制 =====================
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 
@@ -21,17 +22,18 @@ sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_ge
 sed -i "s#_('Firmware Version'),.*#_('Firmware Version'), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || ''),#" \
 feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js
 
-# ===================== NSS 内存/CPU 电压调节（注释行补全引号，保留原样） =====================
-# 调节NSS q6_region 内存预留 (IPQ6018-512M)
-# sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x01000000>/' target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi
-# sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x02000000>/' target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi
-# sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi
-# sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x06000000>/' target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi
+# ===================== AX5 512MB NSS 内存优化 =====================
+echo "===== AX5 512MB NSS Memory Optimization ====="
 
-# CPU 电压调节
-# sed -i 's/opp-microvolt = <937500>;/opp-microvolt = <950000>;/' target/linux/qualcommax/patches-6.12/0038-v6.16-arm64-dts-qcom-ipq6018-add-1.5GHz-CPU-Frequency.patch
+# 修正 NSS 固件路径（qualcommax 目录结构）
+DTS_FILE="target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi"
+if [ -f "$DTS_FILE" ]; then
+    # 为 NSS 预留 64MB 内存（512MB 版本推荐值）
+    sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE"
+    echo "NSS memory reserved: 64MB"
+fi
 
-# ===================== 清理 feeds 原有包（修复路径 ../feeds → feeds，修复拼写） =====================
+# ===================== 清理 feeds 原有包 =====================
 echo "===== Remove default feeds packages ====="
 rm -rf feeds/luci/applications/luci-app-argon-config
 rm -rf feeds/luci/applications/luci-app-wechatpush
@@ -60,21 +62,22 @@ for NAME in "${PKG_LIST[@]}"; do
     fi
 done
 
-# ===================== 稀疏克隆函数（保留原逻辑） =====================
+# ===================== 稀疏克隆函数 =====================
 git_sparse_clone() {
-  local branch="$1" repourl="$2"
-  shift 2
-  git clone --depth=1 -b "$branch" --single-branch --filter=blob:none --sparse "$repourl"
-  local repodir=$(basename "$repourl")
-  cd "$repodir"
-  git sparse-checkout set "$@"
-  mv -f "$@" ../package/
-  cd ..
-  rm -rf "$repodir"
+    local branch="$1" repourl="$2"
+    shift 2
+    git clone --depth=1 -b "$branch" --single-branch --filter=blob:none --sparse "$repourl"
+    local repodir=$(basename "$repourl")
+    cd "$repodir"
+    git sparse-checkout set "$@"
+    mv -f "$@" ../package/
+    cd ..
+    rm -rf "$repodir"
 }
 
 # ===================== 拉取替换包 =====================
 echo "===== Pull custom packages ====="
+
 # Aria2 / Nginx / AriaNG / Golang / Frp
 git_sparse_clone aria2 https://github.com/laipeng668/packages net/aria2
 mv -f package/aria2 feeds/packages/net/aria2
@@ -111,6 +114,8 @@ git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led
 
 # ===================== PassWall & OpenClash =====================
+echo "===== Setup PassWall & OpenClash ====="
+
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
 
@@ -123,38 +128,58 @@ git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-open
 # 清空 PassWall 国内列表
 echo "baidu.com" > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist
 
-# ===================== 修正 NSS 服务启动顺序 =====================
-echo "===== Fix NSS init start order ====="
-# qca-nss-drv
-NSS_DRV="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
-if [ -f "$NSS_DRV" ]; then
-    sed -i 's/START=.*/START=85/g' "$NSS_DRV"
-    echo "qca-nss-drv start order fixed!"
+# ===================== NSS 服务启动顺序修正（AX5 关键） =====================
+echo "===== Fix NSS init start order for AX5 ====="
+
+# 修正 qca-nss-drv 启动顺序（必须在网络启动前）
+NSS_DRV_INIT="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
+if [ -f "$NSS_DRV_INIT" ]; then
+    sed -i 's/START=.*/START=45/' "$NSS_DRV_INIT"
+    sed -i 's/USE_PROCD=.*/USE_PROCD=1/' "$NSS_DRV_INIT"
+    echo "qca-nss-drv init fixed (START=45)"
 fi
 
-# qca-nss-pbuf（修正路径，适配 qualcommax）
-NSS_PBUF="target/linux/qualcommax/files/qca-nss-pbuf.init"
-if [ -f "$NSS_PBUF" ]; then
-    sed -i 's/START=.*/START=86/g' "$NSS_DRV"
-    echo "qca-nss-pbuf start order fixed!"
+# 修正 qca-nss-ecm 连接管理器
+NSS_ECM_INIT="feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init"
+if [ -f "$NSS_ECM_INIT" ]; then
+    sed -i 's/START=.*/START=50/' "$NSS_ECM_INIT"
+    echo "qca-nss-ecm init fixed (START=50)"
+fi
+
+# 修正 ath11k 无线驱动启动顺序（必须在 NSS 之后）
+ATH11K_INIT="package/kernel/ath11k/files/ath11k.init"
+if [ -f "$ATH11K_INIT" ]; then
+    sed -i 's/START=.*/START=60/' "$ATH11K_INIT"
+    echo "ath11k init fixed (START=60)"
 fi
 
 # ===================== 修复 Tailscale 配置冲突 =====================
-TS_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/tailscale/Makefile")
+TS_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/tailscale/Makefile" 2>/dev/null | head -1)
 if [ -f "$TS_FILE" ]; then
     sed -i '/\/files/d' "$TS_FILE"
     echo "Tailscale config fixed!"
 fi
 
 # ===================== 修复 Rust 编译失败 =====================
-RUST_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile")
+RUST_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile" 2>/dev/null | head -1)
 if [ -f "$RUST_FILE" ]; then
     sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"
     echo "Rust compile fixed!"
 fi
 
+# ===================== AX5 特定：禁用 ipq807x 不兼容的驱动 =====================
+echo "===== AX5 specific fixes ====="
+
+# 移除可能冲突的 qca-nss-ppe 驱动（AX5 不需要）
+PPE_DRV="feeds/nss_packages/qca-nss-ppe"
+if [ -d "$PPE_DRV" ]; then
+    rm -rf "$PPE_DRV"
+    echo "Removed qca-nss-ppe (not needed for AX5)"
+fi
+
 # ===================== 最后再执行一次 feeds 刷新 =====================
+echo "===== Final feeds update ====="
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-echo "===== All patch done! ====="
+echo "===== All patch done for AX5 512MB! ====="
