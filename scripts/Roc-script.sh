@@ -43,12 +43,13 @@ for NAME in "${PKG_LIST[@]}"; do
     [ -n "$DIRS" ] && rm -rf "$DIRS" || true
 done
 
-#稀疏克隆函数（克隆失败直接返回不终止脚本）
+#稀疏克隆函数
 git_sparse_clone() {
     local b=$1 u=$2; shift 2
     git clone --depth=1 -b $b --single-branch --filter=blob:none --sparse --timeout=60 "$u" || return 0
     d=$(basename "$u"); cd "$d"
     git sparse-checkout set $*
+    mkdir -p ../package
     mv -f $* ../package 2>/dev/null || true
     cd ..; rm -rf "$d"
 }
@@ -74,7 +75,7 @@ git_sparse_clone frp https://github.com/laipeng668/luci applications/luci-app-fr
 mv -f package/luci-app-frpc feeds/luci/applications 2>/dev/null || true
 mv -f package/luci-app-frps feeds/luci/applications 2>/dev/null || true
 
-#6.拉取主题+常用插件（加超时+容错）
+#6.拉取主题+常用插件
 green "===== Pull Theme & Apps ====="
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon || true
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config || true
@@ -89,7 +90,7 @@ git clone --depth=1 --timeout=60 https://github.com/laipeng668/luci-app-gecoosac
 git clone --depth=1 --timeout=60 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led || true
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led 2>/dev/null || true
 
-#7.Passwall&OpenClash(源码留存、配置不编译)
+#7.Passwall&OpenClash
 green "===== Setup PassWall & OpenClash ====="
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
 git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages || true
@@ -113,7 +114,6 @@ if [ -d feeds/nss_packages ]; then
     [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe && green "   ✓ removed qca-nss-ppe"
 else
     yellow "⚠️ feeds/nss_packages not found, skip NSS patches"
-    yellow "   Add src-git nss_packages https://github.com/qosmio/nss-packages.git into feeds.conf.default"
 fi
 
 #9.ath11k启动优先级
@@ -126,13 +126,34 @@ else
     yellow "⚠️ ath11k.init not found, skip"
 fi
 
-#10.编译容错(rust/tailscale)
+#10.编译容错
 green "===== Fix compile issues ====="
 TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head -1)
 [ -f "$TS" ] && sed -i '/\/files/d' "$TS" && green "✓ Tailscale fixed"
 
 RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" && green "✓ Rust fixed"
+
+# ===================== 关键修复：清理 .config 无效行 =====================
+green "===== Fix .config format ====="
+cd $OPENWRT_PATH
+
+# 备份原配置
+cp .config .config.bak 2>/dev/null || true
+
+# 只保留有效的配置行（CONFIG_ 开头或 # CONFIG_ 开头）
+grep -E '^(# )?CONFIG_' .config.bak > .config 2>/dev/null || true
+
+# 删除空行和制表符
+sed -i '/^$/d' .config
+sed -i 's/^\t//g' .config
+
+# 确保文件末尾有换行
+sed -i -e '$a\' .config
+
+# 重新生成依赖
+make defconfig > /dev/null 2>&1
+green "✅ .config fixed and defconfig done"
 
 #最终刷新源
 green "===== Final feeds update ====="
@@ -143,8 +164,6 @@ echo ""
 green "===== AX5 IPQ6018 512M 补丁全部完成 ====="
 echo ""
 echo "📌 编译步骤："
-echo "   1. rm -f .config"
-echo "   2. cat > .config <<'EOF' 粘贴纯英文配置 EOF"
-echo "   3. make defconfig"
-echo "   4. make download -j8"
-echo "   5. make -j\$(nproc)"
+echo "   1. make defconfig"
+echo "   2. make download -j8"
+echo "   3. make -j\$(nproc)"
