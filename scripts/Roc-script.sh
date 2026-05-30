@@ -1,172 +1,74 @@
 #!/bin/bash
 set -e
 
-# ===================== 全局变量定义 =====================
 PKG_PATH=$(pwd)
+PKG_LIST=(argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter)
 
-# 需要批量清理的包名列表
-PKG_LIST=(
-    argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter
-)
-
-# ===================== 第一步：初始化 feeds =====================
-echo "===== Update & Install Feeds ====="
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-# ===================== 基础定制 =====================
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
+sed -i "s#_('Firmware Version'),.*#_('Firmware Version'), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || ''),#" feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js
 
-# 还原原版版本显示
-sed -i "s#_('Firmware Version'),.*#_('Firmware Version'), (L.isObject(boardinfo.release) ? boardinfo.release.description + ' / ' : '') + (luciversion || ''),#" \
-feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js
-
-# ===================== AX5 512MB NSS 内存优化 =====================
-echo "===== AX5 512MB NSS Memory Optimization ====="
+#NSS内存64M
 DTS_FILE="target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi"
-if [ -f "$DTS_FILE" ]; then
-    sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE"
-    echo "NSS memory reserved: 64MB"
-fi
+[ -f "$DTS_FILE" ] && sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE" && echo "NSS reserved 64MB"
 
-# ===================== 清理 feeds 原有包 =====================
-echo "===== Remove default feeds packages ====="
-rm -rf feeds/luci/applications/luci-app-argon-config
-rm -rf feeds/luci/applications/luci-app-wechatpush
-rm -rf feeds/luci/applications/luci-app-appfilter
-rm -rf feeds/luci/applications/luci-app-frpc
-rm -rf feeds/luci/applications/luci-app-frps
-rm -rf feeds/luci/themes/luci-theme-argon
-rm -rf feeds/packages/net/open-app-filter
-rm -rf feeds/packages/net/ariang
-rm -rf feeds/packages/net/aria2
-rm -rf feeds/packages/net/nginx
-rm -rf feeds/packages/net/frp
-rm -rf feeds/packages/lang/golang
-
-# 批量模糊删除匹配目录
-for NAME in "${PKG_LIST[@]}"; do
-    echo "Search directory: $NAME"
-    FOUND_DIRS=$(find feeds/luci/ feeds/packages/ -maxdepth 3 -type d -iname "*$NAME*" 2>/dev/null)
-    if [ -n "$FOUND_DIRS" ]; then
-        while read -r DIR; do
-            rm -rf "$DIR"
-            echo "Delete directory: $DIR"
-        done <<< "$FOUND_DIRS"
-    else
-        echo "Not found directory: $NAME"
-    fi
+#清理原生插件
+rm -rf feeds/luci/applications/luci-app-{argon-config,wechatpush,appfilter,frpc,frps} feeds/luci/themes/luci-theme-argon
+rm -rf feeds/packages/net/{open-app-filter,ariang,aria2,nginx,frp} feeds/packages/lang/golang
+for NAME in "${PKG_LIST[@]}";do
+  DIRS=$(find feeds/luci feeds/packages -maxdepth 3 -type d -iname "*$NAME*" 2>/dev/null)
+  [ -n "$DIRS" ] && rm -rf $DIRS
 done
 
-# ===================== 稀疏克隆函数 =====================
-git_sparse_clone() {
-    local branch="$1" repourl="$2"
-    shift 2
-    git clone --depth=1 -b "$branch" --single-branch --filter=blob:none --sparse "$repourl"
-    local repodir=$(basename "$repourl")
-    cd "$repodir"
-    git sparse-checkout set "$@"
-    mv -f "$@" ../package/
-    cd ..
-    rm -rf "$repodir"
+#稀疏拉取
+git_sparse_clone(){
+  local b=$1 u=$2;shift 2
+  git clone --depth=1 -b $b --single-branch --filter=blob:none --sparse $u
+  d=$(basename $u);cd $d;git sparse-checkout set $*;mv $* ../package;cd ..;rm -rf $d
 }
-
-# ===================== 拉取替换包 =====================
-echo "===== Pull custom packages ====="
-git_sparse_clone aria2 https://github.com/laipeng668/packages net/aria2
-mv -f package/aria2 feeds/packages/net/aria2
-
-git_sparse_clone nginx https://github.com/laipeng668/packages net/nginx
-mv -f package/nginx feeds/packages/net/nginx
-
-git_sparse_clone ariang https://github.com/laipeng668/packages net/ariang
-mv -f package/ariang feeds/packages/net/ariang
-
-git_sparse_clone master https://github.com/laipeng668/packages lang/golang
-mv -f package/golang feeds/packages/lang/golang
-
-git_sparse_clone frp-binary https://github.com/laipeng668/packages net/frp
-mv -f package/frp feeds/packages/net/frp
-
+git_sparse_clone aria2 https://github.com/laipeng668/packages net/aria2;mv package/aria2 feeds/packages/net
+git_sparse_clone nginx https://github.com/laipeng668/packages net/nginx;mv package/nginx feeds/packages/net
+git_sparse_clone ariang https://github.com/laipeng668/packages net/ariang;mv package/ariang feeds/packages/net
+git_sparse_clone master https://github.com/laipeng668/packages lang/golang;mv package/golang feeds/packages/lang
+git_sparse_clone frp-binary https://github.com/laipeng668/packages net/frp;mv package/frp feeds/packages/net
 git_sparse_clone frp https://github.com/laipeng668/luci applications/luci-app-frpc applications/luci-app-frps
-mv -f package/luci-app-frpc feeds/luci/applications/luci-app-frpc
-mv -f package/luci-app-frps feeds/luci/applications/luci-app-frps
+mv package/luci-app-frpc feeds/luci/applications;mv package/luci-app-frps feeds/luci/applications
 
-# 主题 & 插件
+#主题&插件
 git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
 git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
 git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora
 git clone --depth=1 https://github.com/eamonxg/luci-app-aurora-config feeds/luci/applications/luci-app-aurora-config
-
 git clone --depth=1 https://github.com/sbwml/luci-app-openlist2 package/openlist2
 git clone --depth=1 https://github.com/gdy666/luci-app-lucky package/luci-app-lucky
 git clone --depth=1 https://github.com/tty228/luci-app-wechatpush package/luci-app-wechatpush
 git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
 git clone --depth=1 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
 git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
-
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led
 
-# ===================== PassWall & OpenClash =====================
-echo "===== Setup PassWall & OpenClash ====="
+#Passwall源码(不编译)
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-
-rm -rf feeds/luci/applications/luci-app-passwall
-rm -rf feeds/luci/applications/luci-app-openclash
+rm -rf feeds/luci/applications/{luci-app-passwall,luci-app-openclash}
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
 git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
-
-# 清空 PassWall 国内列表
 echo "baidu.com" > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist
 
-# ===================== NSS 启动修复【拆分单判断，缺文件跳过】 =====================
-echo "===== Fix NSS init start order for AX5 ====="
+#NSS补丁(关闭nss feed自动跳过)
 if [ -d feeds/nss_packages ];then
-    NSS_DRV_INIT="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
-    if [ -f "$NSS_DRV_INIT" ]; then
-        sed -i 's/START=.*/START=45/' "$NSS_DRV_INIT"
-        sed -i 's/USE_PROCD=.*/USE_PROCD=1/' "$NSS_DRV_INIT"
-        echo "qca-nss-drv init fixed (START=45)"
-    fi
-
-    # ECM不存在直接跳过，不报错退出
-    NSS_ECM_INIT="feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init"
-    if [ -f "$NSS_ECM_INIT" ]; then
-        sed -i 's/START=.*/START=50/' "$NSS_ECM_INIT"
-        echo "qca-nss-ecm init fixed (START=50)"
-    else
-        echo "qca-nss-ecm not exist, skip"
-    fi
-
-    PPE_DRV="feeds/nss_packages/qca-nss-ppe"
-    if [ -d "$PPE_DRV" ]; then
-        rm -rf "$PPE_DRV"
-        echo "Removed qca-nss-ppe (not needed for AX5)"
-    fi
+  f=feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init;[ -f $f ]&&sed -i 's/START=.*/START=45/;s/USE_PROCD=.*/USE_PROCD=1/' $f
+  f=feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init;[ -f $f ]&&sed -i 's/START=.*/START=50/' $f||echo "ecm missing skip"
+  [ -d feeds/nss_packages/qca-nss-ppe ]&&rm -rf feeds/nss_packages/qca-nss-ppe
 fi
+f=package/kernel/ath11k/files/ath11k.init;[ -f $f ]&&sed -i 's/START=.*/START=60/' $f
 
-# ath11k无线时序
-ATH11K_INIT="package/kernel/ath11k/files/ath11k.init"
-if [ -f "$ATH11K_INIT" ]; then
-    sed -i 's/START=.*/START=60/' "$ATH11K_INIT"
-    echo "ath11k init fixed (START=60)"
-fi
+#tailscale/rust容错
+TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null|head -1);[ -f "$TS" ]&&sed -i '/\/files/d' "$TS"
+RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null|head -1);[ -f "$RU" ]&&sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-# ===================== Tailscale =====================
-TS_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/tailscale/Makefile" 2>/dev/null | head -1)
-if [ -f "$TS_FILE" ]; then
-    sed -i '/\/files/d' "$TS_FILE"
-    echo "Tailscale config fixed!"
-fi
-
-# ===================== Rust =====================
-RUST_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile" 2>/dev/null | head -1)
-if [ -f "$RUST_FILE" ]; then
-    sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"
-    echo "Rust compile fixed!"
-fi
-
-echo "===== All patch done for AX5 512MB! ====="
+echo "All patch done!"
