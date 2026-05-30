@@ -24,11 +24,8 @@ feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/incl
 
 # ===================== AX5 512MB NSS 内存优化 =====================
 echo "===== AX5 512MB NSS Memory Optimization ====="
-
-# 修正 NSS 固件路径（qualcommax 目录结构）
 DTS_FILE="target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi"
 if [ -f "$DTS_FILE" ]; then
-    # 为 NSS 预留 64MB 内存（512MB 版本推荐值）
     sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE"
     echo "NSS memory reserved: 64MB"
 fi
@@ -77,8 +74,6 @@ git_sparse_clone() {
 
 # ===================== 拉取替换包 =====================
 echo "===== Pull custom packages ====="
-
-# Aria2 / Nginx / AriaNG / Golang / Frp
 git_sparse_clone aria2 https://github.com/laipeng668/packages net/aria2
 mv -f package/aria2 feeds/packages/net/aria2
 
@@ -115,7 +110,6 @@ chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app
 
 # ===================== PassWall & OpenClash =====================
 echo "===== Setup PassWall & OpenClash ====="
-
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
 git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
 
@@ -128,10 +122,9 @@ git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-open
 # 清空 PassWall 国内列表
 echo "baidu.com" > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist
 
-# ===================== NSS 服务启动顺序修正（AX5 关键） =====================
+# ===================== NSS 补丁【已修复：NSS feed关闭自动跳过】 =====================
 echo "===== Fix NSS init start order for AX5 ====="
-
-# 修正 qca-nss-drv 启动顺序（必须在网络启动前）
+if [ -d feeds/nss_packages ];then
 NSS_DRV_INIT="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
 if [ -f "$NSS_DRV_INIT" ]; then
     sed -i 's/START=.*/START=45/' "$NSS_DRV_INIT"
@@ -139,14 +132,24 @@ if [ -f "$NSS_DRV_INIT" ]; then
     echo "qca-nss-drv init fixed (START=45)"
 fi
 
-# 修正 qca-nss-ecm 连接管理器
 NSS_ECM_INIT="feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init"
 if [ -f "$NSS_ECM_INIT" ]; then
     sed -i 's/START=.*/START=50/' "$NSS_ECM_INIT"
     echo "qca-nss-ecm init fixed (START=50)"
 fi
 
-# 修正 ath11k 无线驱动启动顺序（必须在 NSS 之后）
+PPE_DRV="feeds/nss_packages/qca-nss-ppe"
+if [ -d "$PPE_DRV" ]; then
+    rm -rf "$PPE_DRV"
+    echo "Removed qca-nss-ppe (not needed for AX5)"
+fi
+else
+    echo "nss_packages feed disabled, skip nss init fix"
+fi
+
+fi
+
+# 无线启动顺序不受NSS-feed影响，保留
 ATH11K_INIT="package/kernel/ath11k/files/ath11k.init"
 if [ -f "$ATH11K_INIT" ]; then
     sed -i 's/START=.*/START=60/' "$ATH11K_INIT"
@@ -167,19 +170,5 @@ if [ -f "$RUST_FILE" ]; then
     echo "Rust compile fixed!"
 fi
 
-# ===================== AX5 特定：禁用 ipq807x 不兼容的驱动 =====================
-echo "===== AX5 specific fixes ====="
-
-# 移除可能冲突的 qca-nss-ppe 驱动（AX5 不需要）
-PPE_DRV="feeds/nss_packages/qca-nss-ppe"
-if [ -d "$PPE_DRV" ]; then
-    rm -rf "$PPE_DRV"
-    echo "Removed qca-nss-ppe (not needed for AX5)"
-fi
-
-# ===================== 最后再执行一次 feeds 刷新 =====================
-echo "===== Final feeds update ====="
-./scripts/feeds update -a
-./scripts/feeds install -a
-
+#=================删除末尾重复feeds update(冗余删掉)=================
 echo "===== All patch done for AX5 512MB! ====="
