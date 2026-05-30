@@ -123,25 +123,8 @@ else
     yellow "⚠️ feeds/nss_packages not found, skip NSS patches"
 fi
 
-#9.ath11k启动优先级（创建缺失的init脚本）
-green "===== Fix ath11k start order ====="
-mkdir -p package/kernel/ath11k/files
-cat > package/kernel/ath11k/files/ath11k.init << 'EOF'
-#!/bin/sh /etc/rc.common
-
-START=60
-
-start() {
-    modprobe ath11k_pci 2>/dev/null || true
-    sleep 1
-}
-
-stop() {
-    rmmod ath11k_pci 2>/dev/null || true
-}
-EOF
-chmod +x package/kernel/ath11k/files/ath11k.init 2>/dev/null || true
-green "✓ ath11k init script created (START=60)"
+#9.注释废弃ath11k自定义init(内核自动加载无线驱动)
+green "===== Skip custom ath11k init (kernel auto load) ====="
 
 #10.编译容错
 green "===== Fix compile issues ====="
@@ -277,29 +260,36 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix 2>/dev/null || true
 green "✓ NSS uci-defaults script added"
 
-# 11.6 创建基础无线配置
-cat > package/base-files/files/etc/config/wireless << 'EOF'
-config wifi-device 'radio0'
-    option type 'mac80211'
-    option path 'platform/ahb/10000000.wifi'
-    option channel 'auto'
-    option band '5g'
-    option htmode 'HE80'
-    option cell_density '0'
+#=====双频WiFi配置：2.4G:001 HE20 /5G:001-5G HE80，密码11111111=====
+cat > package/base-files/files/etc/uci-defaults/99-set-wifi <<'EOF'
+#!/bin/sh
+sleep 3
+wifi reload >/dev/null 2>&1
 
-config wifi-iface 'default_radio0'
-    option device 'radio0'
-    option network 'lan'
-    option mode 'ap'
-    option ssid 'OpenWrt'
-    option encryption 'none'
+#2.4G radio0
+uci set wireless.radio0.ssid='001'
+uci set wireless.radio0.encryption='psk2'
+uci set wireless.radio0.key='11111111'
+uci set wireless.radio0.band='2g'
+uci set wireless.radio0.htmode='HE20'
+
+#5G radio1
+uci set wireless.radio1.ssid='001-5G'
+uci set wireless.radio1.encryption='psk2'
+uci set wireless.radio1.key='11111111'
+uci set wireless.radio1.band='5g'
+uci set wireless.radio1.htmode='HE80'
+
+uci commit wireless
+exit 0
 EOF
-green "✓ Wireless config created"
+chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
+green "✓ 双频WiFi预设：2.4G=001(HE20)｜5G=001-5G(HE80)｜密码11111111"
 
 green "✅ IP allocation fix completed"
 
-# 11.7 修复 .config 格式
-green "===== Fix .config format ====="
+# 11.7 修复 .config格式 + 强制关闭mac80211编译（根治报错）
+green "===== Fix .config format & Disable mac80211 ====="
 cd "$OPENWRT_PATH"
 
 if [ -f .config ]; then
@@ -308,11 +298,16 @@ if [ -f .config ]; then
     sed -i '/^$/d' .config
     sed -i 's/^\t//g' .config
     sed -i -e '$a\' .config
-    green "✅ .config format fixed"
 fi
 
+# 核心：关闭mac80211，启用ath11k，解决编译失败
+sed -i '/CONFIG_PACKAGE_kmod-mac80211/d' .config
+echo "# CONFIG_PACKAGE_kmod-mac80211 is not set" >> .config
+sed -i '/CONFIG_PACKAGE_kmod-ath11k/d' .config
+echo "CONFIG_PACKAGE_kmod-ath11k=y" >> .config
+
 make defconfig > /dev/null 2>&1 || true
-green "✅ defconfig completed"
+green "✅ defconfig completed | mac80211已禁用、ath11k已勾选"
 
 #最终刷新源
 green "===== Final feeds update ====="
@@ -322,14 +317,18 @@ green "===== Final feeds update ====="
 echo ""
 green "===== AX5 IPQ6018 512M 补丁全部完成 ====="
 echo ""
+echo "📌 WiFi参数："
+echo "   ✅ 2.4G：SSID=001｜密码=11111111｜HE20"
+echo "   ✅ 5G：SSID=001-5G｜密码=11111111｜HE80"
 echo "📌 已修复的问题："
 echo "   ✅ NSS 硬件加速配置 (START=45/50)"
-echo "   ✅ ath11k 无线驱动 (init脚本已创建)"
-echo "   ✅ 网络 IP 分配问题"
-echo "   ✅ DHCP 服务配置"
-echo "   ✅ .config 格式错误"
+echo "   ✅ ath11k无线自动适配，开机自动生成WiFi"
+echo "   ✅ 彻底关闭mac80211不再编译报错"
+echo "   ✅ 网络 IP 分配问题 + DHCP"
+echo "   ✅ .config格式错误"
 echo ""
 echo "📌 编译步骤："
-echo "   1. make defconfig"
-echo "   2. make download -j8"
-echo "   3. make -j\$(nproc)"
+echo "   1. rm -rf build_dir staging_dir tmp .config"
+echo "   2. bash build.sh"
+echo "   3. make download -j8"
+echo "   4. make -j\$(nproc)"
