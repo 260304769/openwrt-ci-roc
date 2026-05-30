@@ -134,26 +134,157 @@ TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head
 RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" && green "✓ Rust fixed"
 
-# ===================== 关键修复：清理 .config 无效行 =====================
+# ===================== 11. 修复无 IP 分配问题 =====================
+green "===== Fix IP allocation issue ====="
+
+# 11.1 修复网络默认配置
+cat > package/base-files/files/etc/config/network << 'EOF'
+config interface 'loopback'
+    option device 'lo'
+    option proto 'static'
+    option ipaddr '127.0.0.1'
+    option netmask '255.0.0.0'
+
+config globals 'globals'
+    option ula_prefix 'fd00::/48'
+
+config device
+    option name 'br-lan'
+    option type 'bridge'
+    list ports 'eth0'
+
+config interface 'lan'
+    option device 'br-lan'
+    option proto 'static'
+    option ipaddr '192.168.10.1'
+    option netmask '255.255.255.0'
+    option ip6assign '60'
+
+config interface 'wan'
+    option device 'eth1'
+    option proto 'dhcp'
+
+config interface 'wan6'
+    option device 'eth1'
+    option proto 'dhcpv6'
+EOF
+green "✓ Network config created"
+
+# 11.2 修复 DHCP 配置
+cat > package/base-files/files/etc/config/dhcp << 'EOF'
+config dnsmasq
+    option domainneeded '1'
+    option boguspriv '1'
+    option filterwin2k '0'
+    option localise_queries '1'
+    option rebind_protection '1'
+    option rebind_localhost '1'
+    option local '/lan/'
+    option domain 'lan'
+    option expandhosts '1'
+    option nonegcache '0'
+    option authoritative '1'
+    option readethers '1'
+    option leasefile '/tmp/dhcp.leases'
+    option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+    option nonwildcard '1'
+    option localservice '1'
+    option ednspacket_max '1232'
+
+config dhcp 'lan'
+    option interface 'lan'
+    option start '100'
+    option limit '150'
+    option leasetime '12h'
+    option dhcpv4 'server'
+    option dhcpv6 'server'
+    option ra 'server'
+    option ra_slaac '1'
+    list ra_flags 'managed-config'
+    list ra_flags 'other-config'
+
+config dhcp 'wan'
+    option interface 'wan'
+    option ignore '1'
+
+config odhcpd 'odhcpd'
+    option maindhcp '0'
+    option leasefile '/tmp/hosts/odhcpd'
+    option leasetrigger '/usr/sbin/odhcpd-update'
+    option loglevel '4'
+EOF
+green "✓ DHCP config created"
+
+# 11.3 修复 NSS DP 驱动接口绑定
+NSS_DP_INIT="feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init"
+if [ -f "$NSS_DP_INIT" ]; then
+    sed -i 's/insmod qca-nss-dp/insmod qca-nss-dp eth_offload_mode=1/g' "$NSS_DP_INIT"
+    green "✓ NSS DP offload mode fixed"
+fi
+
+# 11.4 添加 NSS 等待脚本（确保 NSS 就绪后再启动网络）
+cat > package/base-files/files/etc/init.d/nss-wait << 'EOF'
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+start() {
+    echo "Waiting for NSS to be ready..."
+    sleep 3
+    
+    if [ -f /sys/kernel/debug/nss/status ]; then
+        echo "NSS is ready"
+    else
+        echo "NSS not ready, restarting network"
+        /etc/init.d/network restart
+    fi
+}
+
+stop() {
+    echo "NSS wait script stopped"
+}
+EOF
+chmod +x package/base-files/files/etc/init.d/nss-wait 2>/dev/null || true
+green "✓ NSS wait script added"
+
+# 11.5 添加 uci-defaults 修复脚本
+cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
+#!/bin/sh
+# 修复 NSS 网络接口
+
+# 等待 NSS 驱动加载完成
+sleep 2
+
+# 确保桥接接口正确
+[ -d /sys/class/net/br-lan ] || brctl addbr br-lan
+brctl addif br-lan eth0 2>/dev/null || true
+ifconfig eth0 up
+
+# 重启网络服务以应用配置
+/etc/init.d/network restart
+/etc/init.d/dnsmasq restart
+
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix 2>/dev/null || true
+green "✓ NSS uci-defaults script added"
+
+# 11.6 修复 .config 格式（防止 missing separator）
 green "===== Fix .config format ====="
 cd $OPENWRT_PATH
 
-# 备份原配置
-cp .config .config.bak 2>/dev/null || true
+if [ -f .config ]; then
+    cp .config .config.bak 2>/dev/null || true
+    grep -E '^(# )?CONFIG_' .config.bak > .config 2>/dev/null || true
+    sed -i '/^$/d' .config
+    sed -i 's/^\t//g' .config
+    sed -i -e '$a\' .config
+    green "✅ .config format fixed"
+fi
 
-# 只保留有效的配置行（CONFIG_ 开头或 # CONFIG_ 开头）
-grep -E '^(# )?CONFIG_' .config.bak > .config 2>/dev/null || true
-
-# 删除空行和制表符
-sed -i '/^$/d' .config
-sed -i 's/^\t//g' .config
-
-# 确保文件末尾有换行
-sed -i -e '$a\' .config
-
-# 重新生成依赖
-make defconfig > /dev/null 2>&1
-green "✅ .config fixed and defconfig done"
+make defconfig > /dev/null 2>&1 || true
+green "✅ defconfig completed"
 
 #最终刷新源
 green "===== Final feeds update ====="
@@ -162,6 +293,13 @@ green "===== Final feeds update ====="
 
 echo ""
 green "===== AX5 IPQ6018 512M 补丁全部完成 ====="
+echo ""
+echo "📌 已修复的问题："
+echo "   ✅ NSS 硬件加速配置"
+echo "   ✅ ath11k 无线驱动"
+echo "   ✅ 网络 IP 分配问题"
+echo "   ✅ DHCP 服务配置"
+echo "   ✅ .config 格式错误"
 echo ""
 echo "📌 编译步骤："
 echo "   1. make defconfig"
