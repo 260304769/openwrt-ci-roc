@@ -122,53 +122,51 @@ git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-open
 # 清空 PassWall 国内列表
 echo "baidu.com" > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist
 
-# ===================== NSS 补丁【已修复：NSS feed关闭自动跳过】 =====================
+# ===================== NSS 启动修复【拆分单判断，缺文件跳过】 =====================
 echo "===== Fix NSS init start order for AX5 ====="
 if [ -d feeds/nss_packages ];then
-NSS_DRV_INIT="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
-if [ -f "$NSS_DRV_INIT" ]; then
-    sed -i 's/START=.*/START=45/' "$NSS_DRV_INIT"
-    sed -i 's/USE_PROCD=.*/USE_PROCD=1/' "$NSS_DRV_INIT"
-    echo "qca-nss-drv init fixed (START=45)"
+    NSS_DRV_INIT="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
+    if [ -f "$NSS_DRV_INIT" ]; then
+        sed -i 's/START=.*/START=45/' "$NSS_DRV_INIT"
+        sed -i 's/USE_PROCD=.*/USE_PROCD=1/' "$NSS_DRV_INIT"
+        echo "qca-nss-drv init fixed (START=45)"
+    fi
+
+    # ECM不存在直接跳过，不报错退出
+    NSS_ECM_INIT="feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init"
+    if [ -f "$NSS_ECM_INIT" ]; then
+        sed -i 's/START=.*/START=50/' "$NSS_ECM_INIT"
+        echo "qca-nss-ecm init fixed (START=50)"
+    else
+        echo "qca-nss-ecm not exist, skip"
+    fi
+
+    PPE_DRV="feeds/nss_packages/qca-nss-ppe"
+    if [ -d "$PPE_DRV" ]; then
+        rm -rf "$PPE_DRV"
+        echo "Removed qca-nss-ppe (not needed for AX5)"
+    fi
 fi
 
-NSS_ECM_INIT="feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init"
-if [ -f "$NSS_ECM_INIT" ]; then
-    sed -i 's/START=.*/START=50/' "$NSS_ECM_INIT"
-    echo "qca-nss-ecm init fixed (START=50)"
-fi
-
-PPE_DRV="feeds/nss_packages/qca-nss-ppe"
-if [ -d "$PPE_DRV" ]; then
-    rm -rf "$PPE_DRV"
-    echo "Removed qca-nss-ppe (not needed for AX5)"
-fi
-else
-    echo "nss_packages feed disabled, skip nss init fix"
-fi
-
-fi
-
-# 无线启动顺序不受NSS-feed影响，保留
+# ath11k无线时序
 ATH11K_INIT="package/kernel/ath11k/files/ath11k.init"
 if [ -f "$ATH11K_INIT" ]; then
     sed -i 's/START=.*/START=60/' "$ATH11K_INIT"
     echo "ath11k init fixed (START=60)"
 fi
 
-# ===================== 修复 Tailscale 配置冲突 =====================
+# ===================== Tailscale =====================
 TS_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/tailscale/Makefile" 2>/dev/null | head -1)
 if [ -f "$TS_FILE" ]; then
     sed -i '/\/files/d' "$TS_FILE"
     echo "Tailscale config fixed!"
 fi
 
-# ===================== 修复 Rust 编译失败 =====================
+# ===================== Rust =====================
 RUST_FILE=$(find feeds/packages/ -maxdepth 3 -type f -wholename "*/rust/Makefile" 2>/dev/null | head -1)
 if [ -f "$RUST_FILE" ]; then
     sed -i 's/ci-llvm=true/ci-llvm=false/g' "$RUST_FILE"
     echo "Rust compile fixed!"
 fi
 
-#=================删除末尾重复feeds update(冗余删掉)=================
 echo "===== All patch done for AX5 512MB! ====="
