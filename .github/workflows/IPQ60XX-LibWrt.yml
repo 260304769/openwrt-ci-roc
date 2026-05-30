@@ -57,22 +57,63 @@ jobs:
         echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
         VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
         echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
-        VERSION_KERNEL=$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' target/linux/generic/kernel-6.12 || true)
+        VERSION_KERNEL=$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' target/linux/generic/kernel-6.12 || echo "6.12")
         echo "VERSION_KERNEL=$VERSION_KERNEL" >> $GITHUB_ENV
 
     - name: Generate Variables(生成变量+一次性写入配置)
       run: |
-        # 合并配置（通用在前，主要在后，后者覆盖前者）
-        cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
-        make defconfig > /dev/null 2>&1
+        
+        # 检查配置文件是否存在
+        echo "=== Checking config files ==="
+        if [ ! -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
+          echo "❌ Config file not found: $CONFIG_FILE"
+          exit 1
+        fi
+        
+        # 合并配置
+        echo "=== Merging config files ==="
+        cat "$GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE" "$GITHUB_WORKSPACE/$CONFIG_FILE" 2>/dev/null > .config
+        
+        # 清理无效行（关键修复）
+        echo "=== Cleaning .config ==="
+        grep -E '^(# )?CONFIG_' .config > .config.clean 2>/dev/null || echo "# No valid config" > .config.clean
+        mv .config.clean .config
+        sed -i '/^$/d' .config
+        sed -i 's/^\t//g' .config
+        
+        # 显示前10行用于调试
+        echo "=== .config first 10 lines ==="
+        head -10 .config
+        
+        # 运行 defconfig
+        echo "=== Running make defconfig ==="
+        make defconfig 2>&1 | tee defconfig.log
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          echo "❌ make defconfig failed!"
+          echo "=== defconfig.log ==="
+          cat defconfig.log
+          exit 1
+        fi
+        
+        # 提取变量
+        echo "=== Extracting variables ==="
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}' | sed 's/.git//')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        DEVICE_TARGET=$(awk -F '"' '/CONFIG_TARGET_BOARD/ {print $2}' .config)
+        
+        DEVICE_TARGET=$(awk -F '"' '/CONFIG_TARGET_BOARD/ {print $2}' .config 2>/dev/null || echo "qualcommax")
         echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        DEVICE_SUBTARGET=$(awk -F '"' '/CONFIG_TARGET_SUBTARGET/ {print $2}' .config)
+        
+        DEVICE_SUBTARGET=$(awk -F '"' '/CONFIG_TARGET_SUBTARGET/ {print $2}' .config 2>/dev/null || echo "ipq60xx")
         echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "SHORT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+        
+        SHORT_HASH=$(git log -1 --pretty=format:'%h' 2>/dev/null || echo "unknown")
+        echo "SHORT_HASH=$SHORT_HASH" >> $GITHUB_ENV
+        
+        echo "✅ Generate Variables completed"
+        echo "DEVICE_TARGET: $DEVICE_TARGET"
+        echo "DEVICE_SUBTARGET: $DEVICE_SUBTARGET"
+        echo "SHORT_HASH: $SHORT_HASH"
 
     - name: Cache Toolchain(缓存工具链)
       uses: actions/cache@main
@@ -103,10 +144,16 @@ jobs:
           chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
           cd $OPENWRT_PATH
           $GITHUB_WORKSPACE/$DIY_SCRIPT
-          make defconfig
+          echo "✅ DIY script executed"
         else
           echo "⚠️ DIY script not found: $DIY_SCRIPT, skipping"
         fi
+
+    - name: Final Defconfig(最终配置校正)
+      run: |
+        cd $OPENWRT_PATH
+        make defconfig
+        echo "✅ Final defconfig completed"
 
     - name: Download DL Package(下载源码包)
       run: |
@@ -118,7 +165,18 @@ jobs:
       run: |
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        
+        if make -j$(nproc) 2>&1 | tee build.log; then
+          echo "✅ Parallel compile success"
+        elif make -j1 2>&1 | tee build.log; then
+          echo "✅ Single thread compile success"
+        else
+          echo "❌ Compilation failed!"
+          echo "=== Last 100 lines of build.log ==="
+          tail -100 build.log
+          exit 1
+        fi
+        
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
@@ -132,13 +190,14 @@ jobs:
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
         cp $OPENWRT_PATH/.config IPQ60XX.config
-        mv config.buildinfo IPQ60XX.config.buildinfo
-        mv libwrt-qualcommax-ipq60xx.manifest IPQ60XX.manifest
+        [ -f config.buildinfo ] && mv config.buildinfo IPQ60XX.config.buildinfo
+        [ -f libwrt-qualcommax-ipq60xx.manifest ] && mv libwrt-qualcommax-ipq60xx.manifest IPQ60XX.manifest
         mkdir -p packages
         mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages/ 2>/dev/null || true
         tar -zcf IPQ60XX.Packages.tar.gz packages 2>/dev/null || true
         rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json 2>/dev/null || true
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+        echo "✅ Firmware organized"
 
     - name: Upload Firmware To Release(发布固件)
       if: steps.compile.outputs.status == 'success'
@@ -158,12 +217,15 @@ jobs:
           - 源码提交记录：${{ env.VERSION_INFO }}
 
     - name: Delete Old Cache(删除旧缓存)
+      if: always()
       run: |
+        echo "=== Deleting old caches ==="
         gh cache list --key ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}- --json key --jq '.[].key' | while read -r key; do
-          gh cache delete "$key"
+          echo "Deleting cache: $key"
+          gh cache delete "$key" || true
         done
         echo "========cache status========"
-        echo "ccache: $(du -sh $OPENWRT_PATH/.ccache | cut -f 1)"
-        echo "staging: $(du -sh $OPENWRT_PATH/staging_dir | cut -f 1)"
+        echo "ccache: $(du -sh $OPENWRT_PATH/.ccache 2>/dev/null | cut -f 1 || echo '0')"
+        echo "staging: $(du -sh $OPENWRT_PATH/staging_dir 2>/dev/null | cut -f 1 || echo '0')"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
