@@ -6,6 +6,13 @@ red()    { echo -e "\033[31m$1\033[0m"; }
 green()  { echo -e "\033[32m$1\033[0m"; }
 yellow() { echo -e "\033[33m$1\033[0m"; }
 
+# 设置 OPENWRT_PATH 默认值（关键修复）
+if [ -z "$OPENWRT_PATH" ]; then
+    OPENWRT_PATH=$(pwd)
+    export OPENWRT_PATH
+    green "OPENWRT_PATH set to: $OPENWRT_PATH"
+fi
+
 PKG_LIST=(argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter)
 
 #1.初始化feed
@@ -289,9 +296,11 @@ config wifi-iface 'default_radio0'
 EOF
 green "✓ Wireless config created"
 
+green "✅ IP allocation fix completed"
+
 # 11.7 修复 .config 格式
 green "===== Fix .config format ====="
-cd $OPENWRT_PATH
+cd "$OPENWRT_PATH"
 
 if [ -f .config ]; then
     cp .config .config.bak 2>/dev/null || true
