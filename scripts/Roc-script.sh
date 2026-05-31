@@ -317,7 +317,7 @@ uci set wireless.radio0.key='11111111'
 uci set wireless.radio0.band='2g'
 uci set wireless.radio0.htmode='HE20'
 
-uci set wireless.radio1.ssid='001-5G'
+uci set wireless.radio1.ssid='001_5G'
 uci set wireless.radio1.encryption='psk2'
 uci set wireless.radio1.key='11111111'
 uci set wireless.radio1.band='5g'
@@ -327,7 +327,7 @@ uci commit wireless
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
-green "   ✓ WiFi preset: 001 / 001-5G (密码: 11111111)"
+green "   ✓ WiFi preset: 001 / 001_5G (密码: 11111111)"
 
 # ==================== 14. 最终刷新源 ====================
 green "===== 14/14 Final feeds update ====="
