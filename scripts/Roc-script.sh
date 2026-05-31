@@ -84,7 +84,7 @@ git_sparse_clone frp https://github.com/laipeng668/luci applications/luci-app-fr
 mv -f package/luci-app-frpc feeds/luci/applications
 mv -f package/luci-app-frps feeds/luci/applications
 
-# ==================== 6. 拉取主题和插件 ====================
+# ==================== 6. 拉取主题和插件【修复athena-led chmod容错】 ====================
 green "===== 6/15 Pull Theme & Apps ====="
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
@@ -97,7 +97,10 @@ git clone --depth=1 --timeout=60 https://github.com/tty228/luci-app-wechatpush p
 git clone --depth=1 --timeout=60 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
 git clone --depth=1 --timeout=60 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
 git clone --depth=1 --timeout=60 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
-chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led
+
+# 修复：文件存在才授权，避免不存在文件chmod打包报错
+[ -f package/luci-app-athena-led/root/etc/init.d/athena_led ] && chmod +x "$_"
+[ -f package/luci-app-athena-led/root/usr/sbin/athena-led ] && chmod +x "$_"
 
 # ==================== 7. Passwall & OpenClash ====================
 green "===== 7/15 Setup PassWall & OpenClash ====="
@@ -306,10 +309,11 @@ FWEOF
 
 green "   ✓ 网络/DHCP/防火墙/PPPoE NAT转发全部固化完成"
 
-# ==================== 11. PPPoE TCP MSS 优化 ====================
+# ==================== 11. PPPoE TCP MSS 优化【头部加set +e容错】 ====================
 green "===== 11/15 PPPoE TCP MSS Fix ====="
 cat > package/base-files/files/etc/uci-defaults/97-pppoe-mss-fix << 'MSSFIXEOF'
 #!/bin/sh
+set +e
 iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1452
 ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1432
 exit 0
@@ -321,33 +325,23 @@ green "   ✓ PPPoE MSS优化完成"
 green "===== 12/15 Create NSS wait script ====="
 cat > package/base-files/files/etc/init.d/nss-wait << 'EOF'
 #!/bin/sh /etc/rc.common
-
 START=98
 STOP=10
 USE_PROCD=1
-
 start_service() {
     procd_open_instance
-    procd_set_param command /bin/sh -c "
-        sleep 5
-        echo 'Checking NSS...'
-        if [ -f /sys/kernel/debug/nss/stats ]; then
-            echo 'NSS active'
-        else
-            echo 'NSS not ready, restarting network'
-            /etc/init.d/network restart
-        fi
-    "
+    procd_set_param command /bin/sh -c "set +e;sleep 5;[ -f /sys/kernel/debug/nss/stats ]||/etc/init.d/network restart"
     procd_close_instance
 }
 EOF
 chmod +x package/base-files/files/etc/init.d/nss-wait
 green "   ✓ nss-wait START=98"
 
-# ==================== 13. NSS uci-defaults修复 ====================
+# ==================== 13. NSS uci-defaults修复【头部加set +e】 ====================
 green "===== 13/15 Create NSS firstboot fix ====="
 cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
 #!/bin/sh
+set +e
 sleep 2
 [ -d /sys/class/net/br-lan ] || brctl addbr br-lan 2>/dev/null
 brctl addif br-lan eth0 2>/dev/null || true
@@ -359,10 +353,11 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix
 green "   ✓ NSS firstboot fix created"
 
-# ==================== 14. WiFi预设 ====================
+# ==================== 14. WiFi预设【头部加set +e】 ====================
 green "===== 14/15 WiFi preset ====="
 cat > package/base-files/files/etc/uci-defaults/99-set-wifi << 'EOF'
 #!/bin/sh
+set +e
 sleep 5
 wifi reload >/dev/null 2>&1
 
@@ -384,10 +379,11 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
 green "   ✓ WiFi preset: 001 / 001_5G (密码: 11111111)"
 
-# ==================== 15. CPU ondemand 极致性能 + 最终刷新 ====================
+# ==================== 15. CPU ondemand 极致性能【头部加set +e】 + 最终刷新 ====================
 green "===== 15/15 CPU ondemand Configuration & Final Feeds Update ====="
 cat > package/base-files/files/etc/uci-defaults/98-cpufreq << 'EOF'
 #!/bin/sh
+set +e
 sleep 2
 
 for cpu in /sys/devices/system/cpu/cpu[1-9]*/online; do
@@ -416,3 +412,4 @@ green "   ✓ CPU 极致性能: 800-1800MHz | 15%升频 | 5ms采样"
 ./scripts/feeds install -a
 
 echo ""
+green "====================编译配置修复完毕===================="
