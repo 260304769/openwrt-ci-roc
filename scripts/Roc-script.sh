@@ -21,7 +21,7 @@ sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_genera
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 }
 
-#3 NSS DTS 64MB DDR 0x40000000~0x41000000
+#3 NSS DTS 64MB DDR
 green "====3 NSS DDR 64M Reserve===="
 DTS_FILE=""
 for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m.dtsi,ipq60xx/ipq6018-512m.dtsi};do
@@ -55,8 +55,11 @@ git clone --depth=1 https://github.com/gdy666/luci-app-lucky package/luci-app-lu
 git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
 git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
 
-[ -f package/luci-app-athena-led/root/etc/init.d/athena_led ] && chmod +x $_
-[ -f package/luci-app-athena-led/root/usr/sbin/athena-led ] && chmod +x $_
+#修复chmod报错，全路径
+LED_INIT="package/luci-app-athena-led/root/etc/init.d/athena_led"
+LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
+[ -f "$LED_INIT" ] && chmod +x "$LED_INIT"
+[ -f "$LED_BIN" ] && chmod +x "$LED_BIN"
 
 #7 跳过代理源码
 green "====7 Skip All Proxy Source===="
@@ -104,20 +107,24 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#10 【修复版预埋配置：fstab/OAF/hostapd/时区/内存】
+#10 预埋配置合集
 mkdir -p package/base-files/files/etc/uci-defaults
 
-#时区简体中文
+#①时区+强制默认中文、关闭自动切语言、SSH终端UTF8
 cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
 #!/bin/sh
-uci set luci.main.lang=zh_cn
 uci set system.@system[0].zonename='Asia/Shanghai'
 uci set system.@system[0].timezone='CST-8'
-uci commit luci;uci commit system
+uci set luci.main.lang='zh_cn'
+uci set luci.main.autolang='0'
+uci commit system
+uci commit luci
+#SSH/串口中文不乱码
+echo "export LANG=zh_CN.UTF-8" >> /etc/profile
 EOF
-chmod +x $_
+chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 
-#内存参数+2h缓存自动释放
+#②内存优化+定时释放缓存
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
 echo 60 >/proc/sys/vm/swappiness
@@ -127,33 +134,81 @@ echo 1024 >/proc/sys/vm/min_free_kbytes
 grep -q drop_caches /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 >/proc/sys/vm/drop_caches">>/etc/crontabs/root
 /etc/init.d/cron enable
 EOF
-chmod +x $_
+chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
 
-#====核心修复脚本：容错fstab、容错OAF、wireless脚本内置hostapd目录授权====
+#③核心修复：fstab/OAF/hostapd + Zerotier全锥NAT/防火墙/MTU防断线
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
-#fstab容错创建全局，关闭extroot
+#====fstab&extroot修复====
 if ! uci -q get fstab.@global[0];then
     uci add fstab global
 fi
 uci set fstab.@global[0].extroot='0'
 uci commit fstab
 
-#OAF容错创建配置，消除Entry not found
+#====OAF初始化防报错====
 if ! uci -q get oaf.@global[0];then
     uci add oaf global
 fi
 uci set oaf.@global[0].enable='0'
 uci commit oaf
 
-#无线启动脚本内置自动创建+授权hostapd目录，根治权限拒绝
+#====hostapd目录权限====
 sed -i '/mkdir -p \/var\/run\/hostapd/d' /etc/init.d/wireless
 sed -i 's/start_service() {/start_service() {\nmkdir -p \/var\/run\/hostapd\nchmod 777 \/var\/run\/hostapd/' /etc/init.d/wireless
+
+#====Zerotier防断线全套优化====
+#开启硬件全锥NAT
+uci set firewall.@defaults[0].fullcone='1'
+#新建zerotier防火墙域
+uci add firewall zone
+uci set firewall.zone[-1].name='zerotier'
+uci set firewall.zone[-1].device='zt+'
+uci set firewall.zone[-1].input='ACCEPT'
+uci set firewall.zone[-1].output='ACCEPT'
+uci set firewall.zone[-1].forward='ACCEPT'
+uci set firewall.zone[-1].masq='1'
+uci set firewall.zone[-1].mtu_fix='1'
+#lan<->zt互通
+uci add firewall forwarding
+uci set firewall.forwarding[-1].src='lan'
+uci set firewall.forwarding[-1].dest='zerotier'
+uci add firewall forwarding
+uci set firewall.forwarding[-1].src='zerotier'
+uci set firewall.forwarding[-1].dest='lan'
+#放行9993端口
+uci add firewall rule
+uci set firewall.rule[-1].name='ZT-9993-UDP'
+uci set firewall.rule[-1].src='wan'
+uci set firewall.rule[-1].proto='udp'
+uci set firewall.rule[-1].dest_port='9993'
+uci set firewall.rule[-1].target='ACCEPT'
+uci commit firewall
+
+#Zerotier本地配置
+mkdir -p /var/lib/zerotier-one
+cat > /var/lib/zerotier-one/local.conf <<'ZTCFG'
+{
+"settings":{
+"defaultPhysicalMTU":1400,
+"allowTcpFallbackRelay":false,
+"enableActiveProbes":false,
+"disableBroadcast":true,
+"disableMulticast":true,
+"bind":["0.0.0.0"]
+}
+}
+ZTCFG
+
+#开机自动修改ZT网卡MTU1400
+echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print $2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >>/etc/rc.local
+/etc/init.d/zerotier enable
+
 exit 0
 EOF
-chmod +x $_
+chmod +x package/base-files/files/etc/uci-defaults/92-fix-all
 
 #收尾刷新feed
 ./scripts/feeds update -a
 ./scripts/feeds install -a
-green "==== Prebuild Finish ===="
+green "==== Prebuild All Done ===="
