@@ -62,7 +62,7 @@ jobs:
 
     - name: Generate Variables(生成变量)
       run: |
-        # 复制配置文件（先复制 General.config，再追加平台配置）
+        # 合并配置文件，生成初始 .config
         cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
         make defconfig > /dev/null 2>&1
@@ -107,11 +107,9 @@ jobs:
     - name: Merge Config and Download DL Package(合并配置并下载DL软件包)
       run: |
         cd $OPENWRT_PATH
-        # 合并所有配置文件
+        # 重新合并配置文件，确保脚本添加的包被包含
         cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
-        # 运行 defconfig 确保配置完整
         make defconfig
-        # 下载所有需要的软件包
         make download -j$(nproc)
 
     - name: Compile Firmware(开始编译固件)
@@ -119,7 +117,12 @@ jobs:
       run: |
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "Disk space before compile:"
+        df -h $OPENWRT_PATH
+        make -j$(nproc) V=s 2>&1 | tee /tmp/build.log || {
+          echo "Multi-thread compile failed, trying single thread..."
+          make -j1 V=s 2>&1 | tee /tmp/build-single.log
+        }
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
@@ -135,12 +138,9 @@ jobs:
         cp $OPENWRT_PATH/.config IPQ60XX.config
         mv config.buildinfo IPQ60XX.config.buildinfo
         mv libwrt-qualcommax-ipq60xx.manifest IPQ60XX.manifest
+        mkdir -p packages
         mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages 2>/dev/null || true
-        # 如果没有 .apk 文件，尝试 .ipk 格式
-        if [ ! -d packages ] || [ -z "$(ls -A packages 2>/dev/null)" ]; then
-          mkdir -p packages
-          mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
-        fi
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
         tar -zcf IPQ60XX.Packages.tar.gz packages 2>/dev/null || true
         rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
@@ -157,25 +157,24 @@ jobs:
         body: |
           **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
           ### 📒 固件信息
-          - 这是开启全功能NSS的6.12内核固件，默认主题为Argon；该固件在ImmortalWrt的基础上，添加了额外的软件包和工具。
-          - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的 OpenWrt 固件
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 💝 源码分支: ${{ env.REPO_BRANCH }}
+          - 这是开启全功能NSS的6.12内核固件，默认主题为Argon
+          - 在ImmortalWrt基础上添加了额外软件包和工具
+          - 💻 平台: ${{ env.FIRMWARE_TAG }}
+          - ⚽ 源码: ${{ env.REPO_URL }}
+          - 💝 分支: ${{ env.REPO_BRANCH }}
           - 🌐 默认地址: **192.168.10.1**
-          - 🔑 默认密码: none
+          - 🔑 默认密码: **无**
           - 📶 WiFi: **001** / **001-5G** 密码: **11111111**
           ### 🧊 固件版本
-          - 固件内核版本：**${{ env.VERSION_KERNEL }}**
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
+          - 内核版本：**${{ env.VERSION_KERNEL }}**
+          - 源码最后更新记录：
           - ${{ env.VERSION_INFO }}
 
     - name: Delete Old Cache(删除旧缓存)
       run: |
-        # 获取缓存列表并删除
         gh cache list --key ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}- --json key --jq '.[] | .key' | while read -r key; do
           gh cache delete "$key"
         done
-        # 输出缓存状态
         echo "========cache status========"
         echo "ccache: $(du -sh $OPENWRT_PATH/.ccache | cut -f 1)"
         echo "staging: $(du -sh $OPENWRT_PATH/staging_dir | cut -f 1)"
