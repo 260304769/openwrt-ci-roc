@@ -113,8 +113,8 @@ git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 packag
 git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
 ./scripts/feeds install coreutils ca-bundle curl jq libopenssl-legacy
 
-# ==================== 8. 调整启动优先级 ====================
-green "===== 8/15 Optimize ALL startup order ====="
+# ==================== 8. NSS最优启动时序【核心优化】 ====================
+green "===== 8/15 Optimize NSS&System startup order ====="
 optimize_start() {
     local file=$1 start=$2 name=$3
     if [ -f "$file" ]; then
@@ -125,32 +125,52 @@ optimize_start() {
         yellow "   ⚠ $name init not exist skip"
     fi
 }
+
+# NSS标准固定启动链：drv→ecm→dp→ssdk （最稳转发顺序）
 optimize_start "feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init" 10 "qca-nss-drv"
 [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe && green "   ✓ removed qca-nss-ppe"
-optimize_start "feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init" 12 "qca-nss-ecm"
-optimize_start "feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init" 13 "qca-nss-dp"
-optimize_start "feeds/nss_packages/qca-ssdk/files/qca-ssdk.init" 14 "qca-ssdk"
+optimize_start "feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init" 11 "qca-nss-ecm"
+optimize_start "feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init" 12 "qca-nss-dp"
+optimize_start "feeds/nss_packages/qca-ssdk/files/qca-ssdk.init" 13 "qca-ssdk"
+
+# 系统底层
 optimize_start "package/base-files/files/etc/init.d/boot" 15 "boot"
 optimize_start "package/system/zram-swap/files/zram-swap.init" 16 "zram-swap"
 optimize_start "package/utils/irqbalance/files/irqbalance.init" 17 "irqbalance"
+
+# 网络栈（NSS就绪再初始化网口，规则自动入硬件）
 optimize_start "package/base-files/files/etc/init.d/network" 20 "network"
 optimize_start "package/network/services/dnsmasq/files/dnsmasq.init" 21 "dnsmasq"
 optimize_start "package/network/services/odhcpd/files/odhcpd.init" 22 "odhcpd"
 optimize_start "package/network/config/firewall4/files/firewall.init" 23 "firewall4"
+
+# 内网辅助
 optimize_start "feeds/packages/net/miniupnpd/files/miniupnpd.init" 30 "miniupnpd"
 optimize_start "feeds/packages/net/zerotier/files/zerotier.init" 32 "zerotier"
+
+# WEB面板
 optimize_start "package/network/services/uhttpd/files/uhttpd.init" 40 "uhttpd"
 optimize_start "package/system/rpcd/files/rpcd.init" 41 "rpcd"
+
+# 系统工具
 optimize_start "feeds/packages/net/vlmcsd/files/vlmcsd.init" 50 "vlmcsd"
 optimize_start "feeds/packages/utils/ttyd/files/ttyd.init" 51 "ttyd"
 optimize_start "feeds/luci/applications/luci-app-autoreboot/root/etc/init.d/autoreboot" 60 "autoreboot"
 optimize_start "feeds/luci/applications/luci-app-watchcat/root/etc/init.d/watchcat" 61 "watchcat"
+
+# DDNS
 optimize_start "feeds/packages/net/ddns-scripts/files/ddns.init" 75 "ddns"
+
+# 代理延后启动：不劫持NSS国内流量转发
 optimize_start "package/luci-app-openclash/root/etc/init.d/openclash" 80 "openclash"
 optimize_start "package/luci-app-passwall/root/etc/init.d/passwall" 81 "passwall"
 optimize_start "package/luci-app-passwall2/root/etc/init.d/passwall2" 82 "passwall2"
+
+# 下载服务
 optimize_start "feeds/packages/net/nginx/files/nginx.init" 85 "nginx"
 optimize_start "feeds/packages/net/aria2/files/aria2.init" 88 "aria2"
+
+# LED末尾
 optimize_start "package/luci-app-athena-led/root/etc/init.d/athena_led" 95 "athena-led"
 
 # ====================9. 编译错误修复 ====================
@@ -160,7 +180,7 @@ TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head
 RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" && green "   Rust fixed"
 
-# =========【核心修复：全部预埋配置注释，不再写入固件导致opkg报错】=========
+# =========【原预埋配置全部注释，规避install 2errors】=========
 : '
 #10 网络固化
 #11 MSS脚本
@@ -171,8 +191,35 @@ RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 整段配置全部屏蔽，开机后手动配置，彻底消除install 2errors
 '
 
+#====================【新增：1.默认简体中文+上海时区预埋】====================
+green "===== Add Default Chinese UI + Shanghai Timezone ====="
+mkdir -p package/base-files/files/etc/uci-defaults
+cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
+#!/bin/sh
+uci set luci.main.lang=zh_cn
+uci set system.@system[0].zonename='Asia/Shanghai'
+uci set system.@system[0].timezone='CST-8'
+uci commit luci
+uci commit system
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
+
+#====================【新增：2.内存自动优化+定时释放缓存】====================
+green "===== Add Auto Memory Optimize & Auto Free RAM ====="
+cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
+#!/bin/sh
+#ZRAM与内核内存参数
+echo 60 > /proc/sys/vm/swappiness
+echo 10 > /proc/sys/vm/dirty_ratio
+echo 5 > /proc/sys/vm/dirty_background_ratio
+echo 1024 > /proc/sys/vm/min_free_kbytes
+#每2小时自动释放缓存
+grep -q "drop_caches" /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 > /proc/sys/vm/drop_caches" >>/etc/crontabs/root
+/etc/init.d/cron enable
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
+
 # 最终刷新feed
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
-green "✅ 配置预埋已屏蔽，解决安装阶段2errors，直接编译"
