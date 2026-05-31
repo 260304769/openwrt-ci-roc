@@ -21,7 +21,7 @@ sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_genera
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 }
 
-#3 NSS DTS 64MB DDR
+#3 NSS DTS 64MB DDR（保留DTS修改，NSS内存生效）
 green "====3 NSS DDR 64M Reserve===="
 DTS_FILE=""
 for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m.dtsi,ipq60xx/ipq6018-512m.dtsi};do
@@ -63,8 +63,9 @@ LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
 #7 跳过代理源码
 green "====7 Skip All Proxy Source===="
 
-#8 NSS+系统启动优先级【加目录判断，不存在跳过NSS优化】
-green "====8 Startup Order Optimize===="
+#8 【注释全部启动优先级修改，不再执行，解决报错】
+green "====8 Startup Order Optimize SKIP ===="
+: '
 optimize_start(){
 local f="$1" s="$2" n="$3"
 [ -f "$f" ] && {
@@ -72,7 +73,6 @@ sed -i "s/START=.*/START=$s/" "$f"
 sed -i "s/USE_PROCD=.*/USE_PROCD=1/" "$f"
 }
 }
-#NSS目录存在才修改，不存在直接跳过
 if [ -d feeds/nss_packages ];then
 optimize_start feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init 10 qca-nss-drv
 [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe
@@ -80,29 +80,23 @@ optimize_start feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init 11 qca-nss-
 optimize_start feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init 12 qca-nss-dp
 optimize_start feeds/nss_packages/qca-ssdk/files/qca-ssdk.init 13 qca-ssdk
 fi
-
-#通用系统服务照常优化
 optimize_start package/base-files/files/etc/init.d/boot 15 boot
 optimize_start package/system/zram-swap/files/zram-swap.init 16 zram-swap
 optimize_start package/utils/irqbalance/files/irqbalance.init 17 irqbalance
-
 optimize_start package/base-files/files/etc/init.d/network 20 network
 optimize_start package/network/services/dnsmasq/files/dnsmasq.init 21 dnsmasq
 optimize_start package/network/services/odhcpd/files/odhcpd.init 22 odhcpd
 optimize_start package/network/config/firewall4/files/firewall.init 23 firewall4
-
 optimize_start feeds/packages/net/miniupnpd/files/miniupnpd.init 30 miniupnpd
 optimize_start feeds/packages/net/zerotier/files/zerotier.init 32 zerotier
-
 optimize_start package/network/services/uhttpd/files/uhttpd.init 40 uhttpd
 optimize_start package/system/rpcd/files/rpcd.init 41 rpcd
-
 optimize_start feeds/packages/net/vlmcsd/files/vlmcsd.init 50 vlmcsd
 optimize_start feeds/packages/utils/ttyd/files/ttyd.init 51 ttyd
 optimize_start feeds/luci/applications/luci-app-autoreboot/root/etc/init.d/autoreboot 60 autoreboot
 optimize_start feeds/luci/applications/luci-app-watchcat/root/etc/init.d/watchcat 61 watchcat
-
 optimize_start package/luci-app-athena-led/root/etc/init.d/athena_led 95 athena-led
+'
 
 #9 编译小补丁
 TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1||true)
@@ -110,10 +104,10 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#10 预埋配置合集
+#10 预埋配置【全部保留：中文+内存+fstab+OAF+hostapd+Zerotier防断线】
 mkdir -p package/base-files/files/etc/uci-defaults
 
-#①时区+强制默认中文、关闭自动切语言、SSH终端UTF8
+#①时区+默认中文+SSH UTF8
 cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
 #!/bin/sh
 uci set system.@system[0].zonename='Asia/Shanghai'
@@ -126,7 +120,7 @@ echo "export LANG=zh_CN.UTF-8" >> /etc/profile
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 
-#②内存优化+定时释放缓存
+#②内存优化
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
 echo 60 >/proc/sys/vm/swappiness
@@ -138,7 +132,7 @@ grep -q drop_caches /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 >/proc/s
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
 
-#③fstab/OAF/hostapd+Zerotier优化
+#③修复fstab/OAF/hostapd+Zerotier全套优化
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
 if ! uci -q get fstab.@global[0];then
@@ -156,7 +150,6 @@ uci commit oaf
 sed -i '/mkdir -p \/var\/run\/hostapd/d' /etc/init.d/wireless
 sed -i 's/start_service() {/start_service() {\nmkdir -p \/var\/run\/hostapd\nchmod 777 \/var\/run\/hostapd/' /etc/init.d/wireless
 
-#Zerotier
 uci set firewall.@defaults[0].fullcone='1'
 uci add firewall zone
 uci set firewall.zone[-1].name='zerotier'
