@@ -25,14 +25,15 @@ jobs:
         df -hT
 
     - name: Initialization Environment
-      env: {DEBIAN_FRONTEND: noninteractive}
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt update
         sudo apt install -y $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
         sudo timedatectl set-timezone $TZ
 
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4
 
     - name: Clone Source Code
       run: |
@@ -44,7 +45,7 @@ jobs:
         echo "VERSION_INFO=$(git show -s --date=short --format='作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H')" >>$GITHUB_ENV
         echo "VERSION_KERNEL=$(grep -oP 'LINUX_KERNEL_HASH-\K[\d.]+' target/linux/generic/kernel-6.12||true)" >>$GITHUB_ENV
 
-    - name: Generate Variables # 【唯一一次写入.config】
+    - name: Generate Variables
       run: |
         cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE >$OPENWRT_PATH/.config
         cd $OPENWRT_PATH
@@ -54,8 +55,8 @@ jobs:
         echo "DEVICE_SUBTARGET=$(awk -F'"' '/CONFIG_TARGET_SUBTARGET/{print $2}' .config)" >>$GITHUB_ENV
         echo "SHORT_HASH=$(git rev-parse --short HEAD)" >>$GITHUB_ENV
 
-    - name: Cache Toolchain # 移除CACHE_DATE，key无空格
-      uses: actions/cache@main
+    - name: Cache Toolchain
+      uses: actions/cache@v3
       with:
         key: ${{env.SOURCE_REPO}}-${{env.REPO_BRANCH}}-${{env.DEVICE_TARGET}}-${{env.DEVICE_SUBTARGET}}-${{env.SHORT_HASH}}
         restore-keys: ${{env.SOURCE_REPO}}-${{env.REPO_BRANCH}}-${{env.DEVICE_TARGET}}-${{env.DEVICE_SUBTARGET}}-
@@ -96,7 +97,7 @@ jobs:
       if: !cancelled()
       run: df -hT
 
-    - name: Organize Firmware # 全局find搜寻所有固件
+    - name: Organize Firmware
       if: steps.compile.outputs.status == 'success'
       run: |
         RELEASE_DIR=$OPENWRT_PATH/release
@@ -114,7 +115,7 @@ jobs:
 
     - name: Release Upload
       if: steps.compile.outputs.status == 'success'
-      uses: ncipollo/release-action@main
+      uses: ncipollo/release-action@v1
       with:
         name: ${{env.DATE}} for ${{env.FIRMWARE_TAG}}
         allowUpdates: true
@@ -130,7 +131,8 @@ jobs:
           - 适配：AX5/AX1800/V6/京东云/兆能M2
 
     - name: Clear Old Cache
+      env:
+        GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
       run: |
         gh cache list --key ${{env.SOURCE_REPO}}-${{env.REPO_BRANCH}}-${{env.DEVICE_TARGET}}-${{env.DEVICE_SUBTARGET}}- --json|jq -r '.[].key'|xargs -I{} gh cache delete "{}"
         echo "CCACHE:$(du -sh $OPENWRT_PATH/.ccache|awk '{print $1}') STAGING:$(du -sh $OPENWRT_PATH/staging_dir|awk '{print $1}')"
-      env: {GH_TOKEN: ${{secrets.GITHUB_TOKEN}}}
