@@ -47,11 +47,11 @@ for NAME in "${PKG_LIST[@]}"; do
     [ -n "$DIRS" ] && rm -rf "$DIRS"
 done
 
-# ==================== 稀疏克隆函数 ====================
+# ==================== 稀疏克隆函数【删除--timeout=60】 ====================
 git_sparse_clone() {
     local BRANCH="$1" REPO="$2"; shift 2
     local CHECKOUT=("$@")
-    git clone --depth=1 -b "$BRANCH" --single-branch --filter=blob:none --sparse --timeout=60 "$REPO"
+    git clone --depth=1 -b "$BRANCH" --single-branch --filter=blob:none --sparse "$REPO"
     local DIR_NAME=$(basename "$REPO" .git)
     cd "$DIR_NAME"
     git sparse-checkout set "${CHECKOUT[@]}"
@@ -84,32 +84,32 @@ git_sparse_clone frp https://github.com/laipeng668/luci applications/luci-app-fr
 mv -f package/luci-app-frpc feeds/luci/applications
 mv -f package/luci-app-frps feeds/luci/applications
 
-# ==================== 6. 拉取主题和插件【修复athena-led chmod容错】 ====================
+# ==================== 6. 拉取主题和插件【全删--timeout=60】 ====================
 green "===== 6/15 Pull Theme & Apps ====="
-git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
-git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
-git clone --depth=1 --timeout=60 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora
-git clone --depth=1 --timeout=60 https://github.com/eamonxg/luci-app-aurora-config feeds/luci/applications/luci-app-aurora-config
+git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
+git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
+git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora
+git clone --depth=1 https://github.com/eamonxg/luci-app-aurora-config feeds/luci/applications/luci-app-aurora-config
 
-git clone --depth=1 --timeout=60 https://github.com/sbwml/luci-app-openlist2 package/openlist2
-git clone --depth=1 --timeout=60 https://github.com/gdy666/luci-app-lucky package/luci-app-lucky
-git clone --depth=1 --timeout=60 https://github.com/tty228/luci-app-wechatpush package/luci-app-wechatpush
-git clone --depth=1 --timeout=60 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
-git clone --depth=1 --timeout=60 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
-git clone --depth=1 --timeout=60 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
+git clone --depth=1 https://github.com/sbwml/luci-app-openlist2 package/openlist2
+git clone --depth=1 https://github.com/gdy666/luci-app-lucky package/luci-app-lucky
+git clone --depth=1 https://github.com/tty228/luci-app-wechatpush package/luci-app-wechatpush
+git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
+git clone --depth=1 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
+git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
 
-# 修复：文件存在才授权，避免不存在文件chmod打包报错
+# 文件存在才chmod容错
 [ -f package/luci-app-athena-led/root/etc/init.d/athena_led ] && chmod +x "$_"
 [ -f package/luci-app-athena-led/root/usr/sbin/athena-led ] && chmod +x "$_"
 
 # ==================== 7. Passwall & OpenClash ====================
 green "===== 7/15 Setup PassWall & OpenClash ====="
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
-git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
 rm -rf feeds/luci/applications/{luci-app-passwall,luci-app-openclash}
-git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
-git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
-git clone --depth=1 --timeout=60 https://github.com/vernesong/OpenClash package/luci-app-openclash
+git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall
+git clone --depth=1 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2
+git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-openclash
 
 # ==================== 8. 优化所有启动顺序 ====================
 green "===== 8/15 Optimize ALL startup order ====="
@@ -309,7 +309,7 @@ FWEOF
 
 green "   ✓ 网络/DHCP/防火墙/PPPoE NAT转发全部固化完成"
 
-# ==================== 11. PPPoE TCP MSS 优化【头部加set +e容错】 ====================
+# ==================== 11. PPPoE TCP MSS 优化【set +e容错】 ====================
 green "===== 11/15 PPPoE TCP MSS Fix ====="
 cat > package/base-files/files/etc/uci-defaults/97-pppoe-mss-fix << 'MSSFIXEOF'
 #!/bin/sh
@@ -337,7 +337,7 @@ EOF
 chmod +x package/base-files/files/etc/init.d/nss-wait
 green "   ✓ nss-wait START=98"
 
-# ==================== 13. NSS uci-defaults修复【头部加set +e】 ====================
+# ==================== 13. NSS uci-defaults修复【set +e】 ====================
 green "===== 13/15 Create NSS firstboot fix ====="
 cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
 #!/bin/sh
@@ -353,7 +353,7 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix
 green "   ✓ NSS firstboot fix created"
 
-# ==================== 14. WiFi预设【头部加set +e】 ====================
+# ==================== 14. WiFi预设【set +e】 ====================
 green "===== 14/15 WiFi preset ====="
 cat > package/base-files/files/etc/uci-defaults/99-set-wifi << 'EOF'
 #!/bin/sh
@@ -379,7 +379,7 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
 green "   ✓ WiFi preset: 001 / 001_5G (密码: 11111111)"
 
-# ==================== 15. CPU ondemand 极致性能【头部加set +e】 + 最终刷新 ====================
+# ==================== 15. CPU ondemand 极致性能【set +e】 + 最终刷新 ====================
 green "===== 15/15 CPU ondemand Configuration & Final Feeds Update ====="
 cat > package/base-files/files/etc/uci-defaults/98-cpufreq << 'EOF'
 #!/bin/sh
