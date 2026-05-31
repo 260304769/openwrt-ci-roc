@@ -11,6 +11,7 @@ env:
   REPO_BRANCH: main-nss
   CONFIG_FILE: configs/IPQ60XX.config
   GENERAL_CONFIG_FILE: configs/General.config
+  GENERAL_SHELL: configs/General.sh
   DIY_SCRIPT: scripts/Roc-script.sh
   CLASH_KERNEL: amd64
   FIRMWARE_TAG: IPQ60XX
@@ -63,7 +64,6 @@ jobs:
     - name: Generate Variables(生成变量)
       run: |
         cd $OPENWRT_PATH
-        # 移除原来cp覆盖config，后续统一用官方脚本合并配置
         make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -96,17 +96,18 @@ jobs:
         cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-  
-    - name: Load Custom Configuration(加载自定义配置)
+
+    - name: Load Custom Configuration(加载自定义配置&通用补丁脚本)
       run: |
-        chmod +x $DIY_SCRIPT
+        chmod +x $DIY_SCRIPT $GITHUB_WORKSPACE/$GENERAL_SHELL
         cd $OPENWRT_PATH
         $GITHUB_WORKSPACE/$DIY_SCRIPT
+        $GITHUB_WORKSPACE/$GENERAL_SHELL
 
-    - name: Download DL Package(下载DL软件包)
+    - name: Download DL Package(下载DL软件包｜原生官方合并配置)
       run: |
         cd $OPENWRT_PATH
-        # OpenWrt官方Kconfig脚本合并两份配置，自动去重、格式化、消除非法换行空格
+        # 机型配置 → 通用全局配置，后者自动覆盖重复项，# CONFIG_xxx is not set 完全生效
         ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$CONFIG_FILE
         ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE
         ./scripts/config/savedefconfig > .config
@@ -164,11 +165,9 @@ jobs:
 
     - name: Delete Old Cache(删除旧缓存)
       run: |
-        # 获取缓存列表并删除
         gh cache list --key ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}- --json key --jq '.[] | .key' | while read -r key; do
           gh cache delete "$key"
         done
-        # 输出缓存状态
         echo "========cache status========"
         echo "ccache: $(du -sh $OPENWRT_PATH/.ccache | cut -f 1)"
         echo "staging: $(du -sh $OPENWRT_PATH/staging_dir | cut -f 1)"
