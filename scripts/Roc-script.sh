@@ -20,7 +20,7 @@ green "===== Update & Install Feeds ====="
 ./scripts/feeds update -a || true
 ./scripts/feeds install -a || true
 
-# 2. 基础定制
+# 2. 基础定制：网关/主机名
 green "===== Basic Customization ====="
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate || true
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate || true
@@ -96,7 +96,16 @@ git clone --depth=1 --timeout=60 https://github.com/laipeng668/luci-app-gecoosac
 git clone --depth=1 --timeout=60 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led || true
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led 2>/dev/null || true
 
-# 7. NSS启动顺序修正
+# 7. Passwall & OpenClash
+green "===== Setup PassWall & OpenClash ====="
+rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
+git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages || true
+rm -rf feeds/luci/applications/{luci-app-passwall,luci-app-openclash} || true
+git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall package/luci-app-passwall || true
+git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall2 package/luci-app-passwall2 || true
+git clone --depth=1 --timeout=60 https://github.com/vernesong/OpenClash package/luci-app-openclash || true
+
+# 8. NSS启动顺序修正
 green "===== Fix NSS init start order ====="
 if [ -d feeds/nss_packages ]; then
     f=feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init
@@ -108,7 +117,7 @@ else
     yellow "feeds/nss_packages not found, skip NSS patches"
 fi
 
-# 8. 编译容错修复
+# 9. 编译容错
 green "===== Fix compile issues ====="
 TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head -1)
 [ -f "$TS" ] && sed -i '/\/files/d' "$TS" && green "Tailscale fixed"
@@ -116,7 +125,7 @@ TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head
 RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" && green "Rust fixed"
 
-# 9. 修复网络和DHCP配置
+# 10. 修复网络和DHCP配置
 green "===== Fix Network & DHCP ====="
 mkdir -p package/base-files/files/etc/config
 mkdir -p package/base-files/files/etc/uci-defaults
@@ -196,7 +205,7 @@ config odhcpd 'odhcpd'
     option loglevel '4'
 EOF
 
-# 10. NSS等待脚本
+# 11. NSS等待脚本
 cat > package/base-files/files/etc/init.d/nss-wait << 'EOF'
 #!/bin/sh /etc/rc.common
 
@@ -221,7 +230,7 @@ stop() {
 EOF
 chmod +x package/base-files/files/etc/init.d/nss-wait 2>/dev/null || true
 
-# 11. NSS uci-defaults修复
+# 12. NSS uci-defaults修复
 cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
 #!/bin/sh
 sleep 2
@@ -234,7 +243,7 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix 2>/dev/null || true
 
-# 12. WiFi预设
+# 13. WiFi预设
 cat > package/base-files/files/etc/uci-defaults/99-set-wifi << 'EOF'
 #!/bin/sh
 sleep 3
@@ -257,8 +266,17 @@ exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
 
+# 14. 最终刷新源
+green "===== Final feeds update ====="
+./scripts/feeds update -a || true
+./scripts/feeds install -a || true
+
 green "===== AX5 IPQ6018 512M All Patches Applied ====="
 echo ""
 echo "WiFi Settings:"
 echo "   2.4G: SSID=001 / Password=11111111 / HE20"
 echo "   5G:   SSID=001-5G / Password=11111111 / HE80"
+echo ""
+echo "Network:"
+echo "   IP: 192.168.10.1"
+echo "   DHCP: 192.168.10.100-249"
