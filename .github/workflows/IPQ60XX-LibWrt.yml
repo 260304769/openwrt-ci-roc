@@ -62,7 +62,8 @@ jobs:
 
     - name: Generate Variables(生成变量)
       run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
+        # 复制配置文件（先复制 General.config，再追加平台配置）
+        cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
         make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
@@ -99,17 +100,18 @@ jobs:
   
     - name: Load Custom Configuration(加载自定义配置)
       run: |
-        chmod +x $DIY_SCRIPT
+        chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
         cd $OPENWRT_PATH
         $GITHUB_WORKSPACE/$DIY_SCRIPT
 
-    - name: Download DL Package(下载DL软件包)
+    - name: Merge Config and Download DL Package(合并配置并下载DL软件包)
       run: |
         cd $OPENWRT_PATH
-        ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$CONFIG_FILE
-        ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE
-        ./scripts/config/savedefconfig > .config
+        # 合并所有配置文件
+        cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
+        # 运行 defconfig 确保配置完整
         make defconfig
+        # 下载所有需要的软件包
         make download -j$(nproc)
 
     - name: Compile Firmware(开始编译固件)
@@ -133,8 +135,13 @@ jobs:
         cp $OPENWRT_PATH/.config IPQ60XX.config
         mv config.buildinfo IPQ60XX.config.buildinfo
         mv libwrt-qualcommax-ipq60xx.manifest IPQ60XX.manifest
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
-        tar -zcf IPQ60XX.Packages.tar.gz packages
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages 2>/dev/null || true
+        # 如果没有 .apk 文件，尝试 .ipk 格式
+        if [ ! -d packages ] || [ -z "$(ls -A packages 2>/dev/null)" ]; then
+          mkdir -p packages
+          mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
+        fi
+        tar -zcf IPQ60XX.Packages.tar.gz packages 2>/dev/null || true
         rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
@@ -150,12 +157,13 @@ jobs:
         body: |
           **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
           ### 📒 固件信息
-          - 这是开启全功能NSS的6.12内核固件，默认主题为Aurora；该固件在ImmortalWrt的基础上，添加了额外的软件包cpufreq、ddns、upnp、wol、samba4、vlmcsd、autoreboot、uhttpd、frps、frpc、diskman、hd-idle、acme、wireguard、watchcat、3cat、passwall，并添加了若干工具，具体详见IPQ60XX.config和General.config。
+          - 这是开启全功能NSS的6.12内核固件，默认主题为Argon；该固件在ImmortalWrt的基础上，添加了额外的软件包和工具。
           - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的 OpenWrt 固件
           - ⚽ 固件源码: ${{ env.REPO_URL }}
           - 💝 源码分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: **192.168.2.1**
+          - 🌐 默认地址: **192.168.10.1**
           - 🔑 默认密码: none
+          - 📶 WiFi: **001** / **001-5G** 密码: **11111111**
           ### 🧊 固件版本
           - 固件内核版本：**${{ env.VERSION_KERNEL }}**
           - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
