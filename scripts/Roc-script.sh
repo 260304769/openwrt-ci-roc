@@ -16,17 +16,17 @@ fi
 PKG_LIST=(argon-config wechatpush appfilter frpc frps argon aria2 ariang nginx frp golang open-app-filter)
 
 # ==================== 1. 初始化feed ====================
-green "===== 1/14 Update & Install Feeds ====="
+green "===== 1/15 Update & Install Feeds ====="
 ./scripts/feeds update -a || true
 ./scripts/feeds install -a || true
 
 # ==================== 2. 基础定制 ====================
-green "===== 2/14 Basic Customization ====="
+green "===== 2/15 Basic Customization ====="
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate || true
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate || true
 
 # ==================== 3. DTS NSS预留64MB内存 ====================
-green "===== 3/14 NSS Memory Reservation ====="
+green "===== 3/15 NSS Memory Reservation ====="
 DTS_FILE=""
 for path in \
     "target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-512m.dtsi" \
@@ -41,7 +41,7 @@ else
 fi
 
 # ==================== 4. 清理源内原生包 ====================
-green "===== 4/14 Remove default packages ====="
+green "===== 4/15 Remove default packages ====="
 rm -rf feeds/luci/applications/luci-app-{argon-config,wechatpush,appfilter,frpc,frps} feeds/luci/themes/luci-theme-argon || true
 rm -rf feeds/packages/net/{open-app-filter,ariang,aria2,nginx,frp} feeds/packages/lang/golang || true
 for NAME in "${PKG_LIST[@]}"; do
@@ -61,7 +61,7 @@ git_sparse_clone() {
 }
 
 # ==================== 5. 拉取自定义包 ====================
-green "===== 5/14 Pull custom packages ====="
+green "===== 5/15 Pull custom packages ====="
 git_sparse_clone aria2 https://github.com/laipeng668/packages net/aria2
 mv -f package/aria2 feeds/packages/net 2>/dev/null || true
 
@@ -82,7 +82,7 @@ mv -f package/luci-app-frpc feeds/luci/applications 2>/dev/null || true
 mv -f package/luci-app-frps feeds/luci/applications 2>/dev/null || true
 
 # ==================== 6. 拉取主题和插件 ====================
-green "===== 6/14 Pull Theme & Apps ====="
+green "===== 6/15 Pull Theme & Apps ====="
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon || true
 git clone --depth=1 --timeout=60 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config || true
 git clone --depth=1 --timeout=60 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora || true
@@ -97,7 +97,7 @@ git clone --depth=1 --timeout=60 https://github.com/NONGFAH/luci-app-athena-led 
 chmod +x package/luci-app-athena-led/root/etc/init.d/athena_led package/luci-app-athena-led/root/usr/sbin/athena-led 2>/dev/null || true
 
 # ==================== 7. Passwall & OpenClash ====================
-green "===== 7/14 Setup PassWall & OpenClash ====="
+green "===== 7/15 Setup PassWall & OpenClash ====="
 rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
 git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages || true
 rm -rf feeds/luci/applications/{luci-app-passwall,luci-app-openclash} || true
@@ -106,7 +106,7 @@ git clone --depth=1 --timeout=60 https://github.com/Openwrt-Passwall/openwrt-pas
 git clone --depth=1 --timeout=60 https://github.com/vernesong/OpenClash package/luci-app-openclash || true
 
 # ==================== 8. 优化所有启动顺序 ====================
-green "===== 8/14 Optimize ALL startup order ====="
+green "===== 8/15 Optimize ALL startup order ====="
 
 optimize_start() {
     local file=$1 start=$2 name=$3
@@ -174,7 +174,7 @@ optimize_start "package/luci-app-athena-led/root/etc/init.d/athena_led" 95 "athe
 green "   ✅ 所有启动顺序优化完成"
 
 # ==================== 9. 编译容错 ====================
-green "===== 9/14 Fix compile issues ====="
+green "===== 9/15 Fix compile issues ====="
 TS=$(find feeds/packages -maxdepth 3 -name tailscale/Makefile 2>/dev/null | head -1)
 [ -f "$TS" ] && sed -i '/\/files/d' "$TS" && green "   Tailscale fixed"
 
@@ -182,12 +182,12 @@ RU=$(find feeds/packages -maxdepth 3 -name rust/Makefile 2>/dev/null | head -1)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" && green "   Rust fixed"
 
 # ==================== 10. 修复网络和DHCP配置 ====================
-green "===== 10/14 Fix Network & DHCP ====="
+green "===== 10/15 Fix Network & DHCP ====="
 mkdir -p package/base-files/files/etc/config
 mkdir -p package/base-files/files/etc/uci-defaults
 mkdir -p package/base-files/files/etc/init.d
 
-cat > package/base-files/files/etc/config/network << 'EOF'
+cat > package/base-files/files/etc/config/network << 'NETEOF'
 config interface 'loopback'
     option device 'lo'
     option proto 'static'
@@ -216,9 +216,9 @@ config interface 'wan'
 config interface 'wan6'
     option device 'eth1'
     option proto 'dhcpv6'
-EOF
+NETEOF
 
-cat > package/base-files/files/etc/config/dhcp << 'EOF'
+cat > package/base-files/files/etc/config/dhcp << 'DHCPEOF'
 config dnsmasq
     option domainneeded '1'
     option boguspriv '1'
@@ -259,11 +259,11 @@ config odhcpd 'odhcpd'
     option leasefile '/tmp/hosts/odhcpd'
     option leasetrigger '/usr/sbin/odhcpd-update'
     option loglevel '4'
-EOF
+DHCPEOF
 green "   ✓ Network/DHCP config created"
 
 # ==================== 11. NSS等待脚本 ====================
-green "===== 11/14 Create NSS wait script ====="
+green "===== 11/15 Create NSS wait script ====="
 cat > package/base-files/files/etc/init.d/nss-wait << 'EOF'
 #!/bin/sh /etc/rc.common
 
@@ -290,7 +290,7 @@ chmod +x package/base-files/files/etc/init.d/nss-wait
 green "   ✓ nss-wait START=98"
 
 # ==================== 12. NSS uci-defaults修复 ====================
-green "===== 12/14 Create NSS firstboot fix ====="
+green "===== 12/15 Create NSS firstboot fix ====="
 cat > package/base-files/files/etc/uci-defaults/99-nss-fix << 'EOF'
 #!/bin/sh
 sleep 2
@@ -305,7 +305,7 @@ chmod +x package/base-files/files/etc/uci-defaults/99-nss-fix
 green "   ✓ NSS firstboot fix created"
 
 # ==================== 13. WiFi预设 ====================
-green "===== 13/14 WiFi preset ====="
+green "===== 13/15 WiFi preset ====="
 cat > package/base-files/files/etc/uci-defaults/99-set-wifi << 'EOF'
 #!/bin/sh
 sleep 5
@@ -329,8 +329,42 @@ EOF
 chmod +x package/base-files/files/etc/uci-defaults/99-set-wifi
 green "   ✓ WiFi preset: 001 / 001_5G (密码: 11111111)"
 
-# ==================== 14. 最终刷新源 ====================
-green "===== 14/14 Final feeds update ====="
+# ==================== 14. CPU ondemand 激进调度 (800-1800MHz) ====================
+green "===== 14/15 CPU ondemand Configuration ====="
+
+cat > package/base-files/files/etc/uci-defaults/98-cpufreq << 'EOF'
+#!/bin/sh
+sleep 2
+
+# 启用所有 CPU 核心
+for cpu in /sys/devices/system/cpu/cpu[1-9]*/online; do
+    echo 1 > "$cpu" 2>/dev/null
+done
+
+# 设置 ondemand 激进调度 + 频率范围 800-1800MHz
+if [ -d /sys/devices/system/cpu/cpufreq ]; then
+    for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+        echo "ondemand" > "$policy/scaling_governor" 2>/dev/null
+        echo 800000  > "$policy/scaling_min_freq" 2>/dev/null
+        echo 1800000 > "$policy/scaling_max_freq" 2>/dev/null
+    done
+    
+    # 激进参数：25%升频 | 10ms采样 | 后台也触发 | 快速降频
+    echo 25     > /sys/devices/system/cpu/cpufreq/ondemand/up_threshold 2>/dev/null
+    echo 10000  > /sys/devices/system/cpu/cpufreq/ondemand/sampling_rate 2>/dev/null
+    echo 0      > /sys/devices/system/cpu/cpufreq/ondemand/ignore_nice_load 2>/dev/null
+    echo 100    > /sys/devices/system/cpu/cpufreq/ondemand/sampling_down_factor 2>/dev/null
+fi
+
+exit 0
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/98-cpufreq
+
+green "   ✓ CPU 激进调度: 800-1800MHz | 25%升频 | 10ms采样"
+
+# ==================== 15. 最终刷新源 ====================
+green "===== 15/15 Final feeds update ====="
 ./scripts/feeds update -a || true
 ./scripts/feeds install -a || true
 
+# ==================== 完成 ====================
