@@ -3,8 +3,6 @@ name: IPQ60XX-LibWrt
 on:
   workflow_dispatch:
   workflow_call:
-  # schedule:
-  #   - cron: "0 18 * * *"
 
 env:
   REPO_URL: https://github.com/laipeng668/openwrt-6.x.git
@@ -62,7 +60,6 @@ jobs:
 
     - name: Generate Variables(生成变量)
       run: |
-        # 合并配置文件，生成初始 .config
         cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
         make defconfig > /dev/null 2>&1
@@ -107,7 +104,6 @@ jobs:
     - name: Merge Config and Download DL Package(合并配置并下载DL软件包)
       run: |
         cd $OPENWRT_PATH
-        # 重新合并配置文件，确保脚本添加的包被包含
         cat $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE $GITHUB_WORKSPACE/$CONFIG_FILE > $OPENWRT_PATH/.config
         make defconfig
         make download -j$(nproc)
@@ -117,7 +113,6 @@ jobs:
       run: |
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile"
-        echo "Disk space before compile:"
         df -h $OPENWRT_PATH
         make -j$(nproc) V=s 2>&1 | tee /tmp/build.log || {
           echo "Multi-thread compile failed, trying single thread..."
@@ -135,14 +130,42 @@ jobs:
       if: steps.compile.outputs.status == 'success'
       run: |
         cd $OPENWRT_PATH/bin/targets/*/*
+        echo "Current directory: $(pwd)"
+        echo "Files:"
+        ls -la
+        
+        # 复制配置文件
         cp $OPENWRT_PATH/.config IPQ60XX.config
-        mv config.buildinfo IPQ60XX.config.buildinfo
-        mv libwrt-qualcommax-ipq60xx.manifest IPQ60XX.manifest
+        
+        # 复制 buildinfo
+        if [ -f config.buildinfo ]; then
+          mv config.buildinfo IPQ60XX.config.buildinfo
+        fi
+        
+        # 复制 manifest
+        MANIFEST_FILE=$(ls *.manifest 2>/dev/null | head -1)
+        if [ -n "$MANIFEST_FILE" ]; then
+          cp "$MANIFEST_FILE" IPQ60XX.manifest
+        else
+          touch IPQ60XX.manifest
+        fi
+        
+        # 整理软件包
         mkdir -p packages
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages 2>/dev/null || true
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages 2>/dev/null || true
-        tar -zcf IPQ60XX.Packages.tar.gz packages 2>/dev/null || true
-        rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json
+        find $OPENWRT_PATH/bin/packages -name "*.apk" -exec cp {} packages/ \; 2>/dev/null || true
+        find $OPENWRT_PATH/bin/packages -name "*.ipk" -exec cp {} packages/ \; 2>/dev/null || true
+        
+        if [ "$(ls -A packages 2>/dev/null)" ]; then
+          tar -zcf IPQ60XX.Packages.tar.gz packages
+        else
+          tar -zcf IPQ60XX.Packages.tar.gz --files-from /dev/null
+        fi
+        
+        rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json 2>/dev/null || true
+        
+        echo "Final files:"
+        ls -la IPQ60XX.*
+        
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
 
     - name: Upload Firmware To Release(发布固件)
@@ -156,18 +179,19 @@ jobs:
         artifacts: ${{ env.FIRMWARE_PATH }}/*
         body: |
           **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
-          ### 📒 固件信息
-          - 这是开启全功能NSS的6.12内核固件，默认主题为Argon
-          - 在ImmortalWrt基础上添加了额外软件包和工具
-          - 💻 平台: ${{ env.FIRMWARE_TAG }}
-          - ⚽ 源码: ${{ env.REPO_URL }}
-          - 💝 分支: ${{ env.REPO_BRANCH }}
-          - 🌐 默认地址: **192.168.10.1**
-          - 🔑 默认密码: **无**
-          - 📶 WiFi: **001** / **001-5G** 密码: **11111111**
-          ### 🧊 固件版本
-          - 内核版本：**${{ env.VERSION_KERNEL }}**
-          - 源码最后更新记录：
+          ### 固件信息
+          - 开启全功能 NSS 的 6.12 内核固件
+          - 主题: Argon
+          - 平台: ${{ env.FIRMWARE_TAG }}
+          - 源码: ${{ env.REPO_URL }}
+          - 分支: ${{ env.REPO_BRANCH }}
+          - 默认地址: **192.168.10.1**
+          - 默认密码: **无**
+          - WiFi 2.4G: **001** / 密码: **11111111**
+          - WiFi 5G: **001-5G** / 密码: **11111111**
+          ### 版本
+          - 内核: **${{ env.VERSION_KERNEL }}**
+          - 源码更新:
           - ${{ env.VERSION_INFO }}
 
     - name: Delete Old Cache(删除旧缓存)
