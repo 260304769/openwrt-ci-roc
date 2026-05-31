@@ -47,7 +47,7 @@ for NAME in "${PKG_LIST[@]}"; do
     [ -n "$DIRS" ] && rm -rf "$DIRS"
 done
 
-# ==================== 稀疏克隆函数【删除--timeout=60】 ====================
+# ==================== 稀疏克隆函数(移除timeout) ====================
 git_sparse_clone() {
     local BRANCH="$1" REPO="$2"; shift 2
     local CHECKOUT=("$@")
@@ -84,7 +84,7 @@ git_sparse_clone frp https://github.com/laipeng668/luci applications/luci-app-fr
 mv -f package/luci-app-frpc feeds/luci/applications
 mv -f package/luci-app-frps feeds/luci/applications
 
-# ==================== 6. 拉取主题和插件【全删--timeout=60】 ====================
+# ==================== 6. 拉取主题和插件【修复athena chmod语法】 ====================
 green "===== 6/15 Pull Theme & Apps ====="
 git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
 git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
@@ -98,9 +98,11 @@ git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAp
 git clone --depth=1 https://github.com/laipeng668/luci-app-gecoosac package/luci-app-gecoosac
 git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
 
-# 文件存在才chmod容错
-[ -f package/luci-app-athena-led/root/etc/init.d/athena_led ] && chmod +x "$_"
-[ -f package/luci-app-athena-led/root/usr/sbin/athena-led ] && chmod +x "$_"
+# 修正：弃用$_，标准路径判断，解决chmod: cannot access ']'报错
+LED_INIT="package/luci-app-athena-led/root/etc/init.d/athena_led"
+LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
+[ -f "${LED_INIT}" ] && chmod +x "${LED_INIT}"
+[ -f "${LED_BIN}" ] && chmod +x "${LED_BIN}"
 
 # ==================== 7. Passwall & OpenClash ====================
 green "===== 7/15 Setup PassWall & OpenClash ====="
@@ -113,7 +115,6 @@ git clone --depth=1 https://github.com/vernesong/OpenClash package/luci-app-open
 
 # ==================== 8. 优化所有启动顺序 ====================
 green "===== 8/15 Optimize ALL startup order ====="
-
 optimize_start() {
     local file=$1 start=$2 name=$3
     if [ -f "$file" ]; then
@@ -412,4 +413,4 @@ green "   ✓ CPU 极致性能: 800-1800MHz | 15%升频 | 5ms采样"
 ./scripts/feeds install -a
 
 echo ""
-green "====================编译配置修复完毕===================="
+green "====================脚本修复完毕===================="
