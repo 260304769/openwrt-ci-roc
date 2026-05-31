@@ -62,8 +62,8 @@ jobs:
 
     - name: Generate Variables(生成变量)
       run: |
-        cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
+        # 移除原来cp覆盖config，后续统一用官方脚本合并配置
         make defconfig > /dev/null 2>&1
         SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
         echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
@@ -105,8 +105,11 @@ jobs:
 
     - name: Download DL Package(下载DL软件包)
       run: |
-        cat $CONFIG_FILE $GENERAL_CONFIG_FILE > $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
+        # OpenWrt官方Kconfig脚本合并两份配置，自动去重、格式化、消除非法换行空格
+        ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$CONFIG_FILE
+        ./scripts/config/conf --defconfig-from-file $GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE
+        ./scripts/config/savedefconfig > .config
         make defconfig
         make download -j$(nproc)
 
