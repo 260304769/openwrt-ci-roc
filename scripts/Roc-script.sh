@@ -63,7 +63,7 @@ LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
 #7 跳过代理源码
 green "====7 Skip All Proxy Source===="
 
-#8 【启用启动时序优化｜NSS优先启动+删除PPE根治冲突】
+#8 【修复】NSS启动优化：目录不存在自动跳过，不会异常退出
 green "====8 Startup Order Optimize Enable ===="
 optimize_start(){
 local f="$1" s="$2"
@@ -72,16 +72,17 @@ sed -i "s/START=.*/START=$s/" "$f"
 sed -i "s/USE_PROCD=.*/USE_PROCD=1/" "$f"
 }
 }
-#永久删除PPE目录，根除PPE与NSS冲突
+
+#仅存在nss_packages目录才执行NSS驱动时序+删PPE
 if [ -d feeds/nss_packages ];then
 [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe
-#NSS硬件驱动优先启动(10~13，网络栈之前初始化)
 optimize_start feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init 10
 optimize_start feeds/nss_packages/qca-nss-ecm/files/qca-nss-ecm.init 11
 optimize_start feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init 12
 optimize_start feeds/nss_packages/qca-ssdk/files/qca-ssdk.init 13
 fi
-#系统服务逐级顺延
+
+#系统服务固定修改，不受NSS目录影响
 optimize_start package/base-files/files/etc/init.d/boot 15
 optimize_start package/system/zram-swap/files/zram-swap.init 16
 optimize_start package/utils/irqbalance/files/irqbalance.init 17
@@ -105,13 +106,11 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#=====新增：Argon+Aurora首页嵌入NSS硬件状态显示=====
+#首页嵌入NSS状态(Argon+Aurora双主题)
 green "==== Inject NSS Status To Argon & Aurora Homepage ===="
-#Argon主题首页植入NSS信息
 ARGON_PATH="feeds/luci/themes/luci-theme-argon/luasrc/view/themes/argon/status.htm"
 [ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \'CPU.*HWE.*\' /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \'/tcp|udp|total/{printf $0\" \"}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $ARGON_PATH
 
-#Aurora主题首页植入NSS信息
 AURORA_PATH="feeds/luci/themes/luci-theme-aurora/luasrc/view/themes/aurora/status.htm"
 [ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \'/tcp|udp|total/{print $0}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $AURORA_PATH
 
@@ -161,7 +160,7 @@ uci commit ecm
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-nss-ecm
 
-#④防火墙/Zerotier/hostapd固化配置
+#④【修复】注释zerotier异常local.conf，保留防火墙+MTU修正
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
 if ! uci -q get fstab.@global[0];then
@@ -204,19 +203,21 @@ uci set firewall.rule[-1].dest_port='9993'
 uci set firewall.rule[-1].target='ACCEPT'
 uci commit firewall
 
-mkdir -p /var/lib/zerotier-one
-cat > /var/lib/zerotier-one/local.conf <<'ZTCFG'
-{
-"settings":{
-"defaultPhysicalMTU":1400,
-"allowTcpFallbackRelay":false,
-"enableActiveProbes":false,
-"disableBroadcast":true,
-"disableMulticast":true,
-"bind":["0.0.0.0"]
-}
-}
-ZTCFG
+# 注释异常配置，避免ZT反复崩溃
+#mkdir -p /var/lib/zerotier-one
+#cat > /var/lib/zerotier-one/local.conf <<'ZTCFG'
+#{
+#"settings":{
+#"defaultPhysicalMTU":1400,
+#"allowTcpFallbackRelay":false,
+#"enableActiveProbes":false,
+#"disableBroadcast":true,
+#"disableMulticast":true,
+#"bind":["0.0.0.0"]
+#}
+#}
+#ZTCFG
+#开机自动修正ZT网卡MTU保留
 echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print $2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >>/etc/rc.local
 /etc/init.d/zerotier enable
 exit 0
@@ -228,15 +229,13 @@ chmod +x package/base-files/files/etc/uci-defaults/92-fix-all
 ./scripts/feeds install -a
 green "==== Prebuild All Done ===="
 
-#================NSS全冗余.config自动写入｜去冲突完整版================
+#NSS全冗余.config写入
 CFG=".config"
-#清理冲突配置项
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ecm-nat/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-cake/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ppe/d' $CFG
 
-#写入全套无冲突NSS冗余+流量预加载
 cat >>$CFG <<'NSS_ALL_CONF'
 #NSS内存规格适配AX5 512MB
 CONFIG_NSS_MEM_PROFILE_MEDIUM=y
@@ -288,4 +287,4 @@ CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
 # CONFIG_PACKAGE_kmod-qca-nss-ppe-nat is not set
 NSS_ALL_CONF
 
-green "==== NSS全冗余+ECM预加载+启动时序+内存优化+首页NSS状态栏全部配置完成 ===="
+green "==== NSS全冗余+ECM预加载+启动时序+首页状态栏+ZT崩溃修复全部完成 ===="
