@@ -105,6 +105,16 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
+#=====新增：Argon+Aurora首页嵌入NSS硬件状态显示=====
+green "==== Inject NSS Status To Argon & Aurora Homepage ===="
+#Argon主题首页植入NSS信息
+ARGON_PATH="feeds/luci/themes/luci-theme-argon/luasrc/view/themes/argon/status.htm"
+[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \'CPU.*HWE.*\' /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \'/tcp|udp|total/{printf $0\" \"}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $ARGON_PATH
+
+#Aurora主题首页植入NSS信息
+AURORA_PATH="feeds/luci/themes/luci-theme-aurora/luasrc/view/themes/aurora/status.htm"
+[ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \'/tcp|udp|total/{print $0}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $AURORA_PATH
+
 #10 预埋默认配置
 mkdir -p package/base-files/files/etc/uci-defaults
 
@@ -278,4 +288,4 @@ CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
 # CONFIG_PACKAGE_kmod-qca-nss-ppe-nat is not set
 NSS_ALL_CONF
 
-green "==== NSS全冗余+ECM预加载+启动时序+内存优化全部配置完成 ===="
+green "==== NSS全冗余+ECM预加载+启动时序+内存优化+首页NSS状态栏全部配置完成 ===="
