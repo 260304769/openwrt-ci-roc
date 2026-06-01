@@ -146,8 +146,7 @@ chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 #②内存+NSS稳定参数（性能优化版）
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
-# 脏页控制
-echo 60 >/proc/sys/vm/swappiness
+# 脏页控制（swappiness 由 94-zram-tune 统一管理）
 echo 10 >/proc/sys/vm/dirty_ratio
 echo 5 >/proc/sys/vm/dirty_background_ratio
 
@@ -170,6 +169,17 @@ grep -q "tcp_congestion_control" /etc/sysctl.conf || {
     echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
 }
+
+# TCP 保活 + TIME_WAIT 复用
+grep -q "tcp_tw_reuse" /etc/sysctl.conf || echo "net.ipv4.tcp_tw_reuse=1" >> /etc/sysctl.conf
+grep -q "tcp_keepalive_time" /etc/sysctl.conf || {
+    echo "net.ipv4.tcp_keepalive_time=60" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_keepalive_intvl=10" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_keepalive_probes=6" >> /etc/sysctl.conf
+}
+
+# 路由缓存 GC 优化
+grep -q "route.gc_timeout" /etc/sysctl.conf || echo "net.ipv4.route.gc_timeout=100" >> /etc/sysctl.conf
 
 # NSS 稳速参数
 [ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable
@@ -284,19 +294,52 @@ cat > package/base-files/files/etc/uci-defaults/94-zram-tune <<'EOF'
 if [ -d /sys/block/zram0 ]; then
     echo 4 > /sys/block/zram0/max_comp_streams 2>/dev/null || true
     echo 40 > /proc/sys/vm/swappiness 2>/dev/null || true
+    [ -d /sys/block/zram0/bdi ] && echo 0 > /sys/block/zram0/bdi/max_ratio 2>/dev/null || true
+else
+    echo 60 > /proc/sys/vm/swappiness 2>/dev/null || true
 fi
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/94-zram-tune
 
-#11 长期运行守护｜防内存泄漏 + 关键服务自动恢复
+#⑦ PPPoE 长期稳定优化
+cat > package/base-files/files/etc/uci-defaults/96-pppoe-optimize <<'EOF'
+#!/bin/sh
+# PPPoE 长期稳定优化
+uci -q get network.wan >/dev/null || exit 0
+proto=$(uci -q get network.wan.proto 2>/dev/null || true)
+
+if [ "$proto" = "pppoe" ]; then
+    # LCP 保活：30s间隔，6次失败才断线（3分钟容忍）
+    uci set network.wan.keepalive='30 6'
+    # 使用运营商 DNS
+    uci set network.wan.peerdns='1'
+    # MTU 1492（PPPoE 8字节开销）
+    uci set network.wan.mtu='1492'
+    # 断线后快速重拨
+    uci set network.wan.demand='0'
+    # IPv6 兼容
+    uci set network.wan.ipv6='1'
+    uci commit network
+    
+    # 确保 pppoe-wan 接口 MTU
+    ip link set pppoe-wan mtu 1492 2>/dev/null || true
+fi
+
+# PPP 死锁预防 crontab
+grep -q "pppd-watchdog" /etc/crontabs/root || \
+    echo "*/5 * * * * pgrep pppd >/dev/null 2>&1 || ifup wan 2>/dev/null" >> /etc/crontabs/root
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/96-pppoe-optimize
+
+#11 长期运行守护｜防内存泄漏 + PPPoE自愈 + 关键服务自动恢复
 green "====11 Long-Run Guardian ===="
 mkdir -p package/base-files/files/etc/hotplug.d/iface
 mkdir -p package/base-files/files/usr/bin
 
-#① 守护进程主程序
+#① 守护进程主程序（含 PPPoE 自愈）
 cat > package/base-files/files/usr/bin/roc-guardian <<'GUARDIAN'
 #!/bin/sh
-# Roc Guardian v1.0 - 长期运行守护
+# Roc Guardian v2.0 - 长期运行守护 + PPPoE 自愈
 LOG_TAG="roc-guardian"
 MEM_THRESHOLD=85
 PROC_THRESHOLD=300
@@ -385,7 +428,56 @@ check_proc_count() {
     [ "$count" -gt "$PROC_THRESHOLD" ] && log "WARNING: process count $count > $PROC_THRESHOLD"
 }
 
-log "Guardian started, PID=$$"
+check_pppoe() {
+    proto=$(uci -q get network.wan.proto 2>/dev/null || true)
+    [ "$proto" != "pppoe" ] && return 0
+    
+    # 1. pppd 进程守护
+    if ! pgrep -f "pppd.*wan" >/dev/null 2>&1; then
+        log "PPPoE pppd process dead, attempting reconnect..."
+        ifup wan 2>/dev/null || true
+        return
+    fi
+    
+    # 2. IP 检查
+    wan_ip=$(ifconfig pppoe-wan 2>/dev/null | awk '/inet /{print $2}' | cut -d: -f2)
+    if [ -z "$wan_ip" ] || [ "$wan_ip" = "0.0.0.0" ]; then
+        log "PPPoE no IP assigned, restarting wan..."
+        ifdown wan 2>/dev/null || true
+        sleep 3
+        ifup wan 2>/dev/null || true
+        return
+    fi
+    
+    # 3. 网关 Ping 检测
+    gateway=$(ip route | awk '/default via/{print $3; exit}')
+    if [ -n "$gateway" ]; then
+        fail_count=0
+        for i in 1 2 3; do
+            ping -c1 -W2 "$gateway" >/dev/null 2>&1 || fail_count=$((fail_count + 1))
+            sleep 1
+        done
+        if [ "$fail_count" -ge 3 ]; then
+            log "PPPoE gateway $gateway unreachable, reconnecting..."
+            ifdown wan 2>/dev/null || true
+            sleep 5
+            ifup wan 2>/dev/null || true
+            [ -x /etc/init.d/qca-nss-ecm ] && /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
+            [ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable 2>/dev/null || true
+        fi
+    fi
+    
+    # 4. 接口错误计数
+    err_count=$(ifconfig pppoe-wan 2>/dev/null | grep -o 'errors:[0-9]*' | cut -d: -f2 || echo 0)
+    if [ "$err_count" -gt 1000 ]; then
+        log "PPPoE errors $err_count > 1000, resetting interface..."
+        ifdown wan 2>/dev/null || true
+        sleep 3
+        ifup wan 2>/dev/null || true
+    fi
+}
+
+log "Guardian v2.0 started, PID=$$"
 while true; do
     protect_oom
     check_memory
@@ -393,6 +485,7 @@ while true; do
     check_nss
     check_conntrack
     check_proc_count
+    check_pppoe
     sleep 300
 done
 GUARDIAN
@@ -420,18 +513,38 @@ stop_service() {
 INIT
 chmod +x package/base-files/files/etc/init.d/roc-guardian
 
-#③ WAN重连NSS加速恢复
+#③ WAN重连全链路恢复（含PPPoE专用优化）
 cat > package/base-files/files/etc/hotplug.d/iface/99-nss-recover <<'HOTPLUG'
 #!/bin/sh
 [ "$ACTION" = "ifup" ] || exit 0
 [ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
 
-logger -t nss-recover "WAN up, recovering NSS acceleration..."
-sleep 3
+logger -t nss-recover "WAN up, full recovery sequence..."
+sleep 5
 
+# 1. NSS 加速恢复
 [ -x /etc/init.d/qca-nss-ecm ] && /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
 [ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable 2>/dev/null || true
 [ -d /sys/module/xt_FULLCONENAT ] && echo 1 >/sys/module/xt_FULLCONENAT/parameters/enable 2>/dev/null || true
+
+# 2. PPPoE 优化参数重新生效
+proto=$(uci -q get network.wan.proto 2>/dev/null || true)
+if [ "$proto" = "pppoe" ]; then
+    uci set network.wan.keepalive='30 6'
+    uci commit network
+    ip link set pppoe-wan mtu 1492 2>/dev/null || true
+    logger -t nss-recover "PPPoE optimized: MTU=1492, LCP=30/6"
+fi
+
+# 3. DNS 恢复
+[ -f /tmp/resolv.conf.auto ] && /etc/init.d/dnsmasq reload 2>/dev/null || true
+
+# 4. Zerotier 重新绑定
+if pgrep zerotier-one >/dev/null 2>&1; then
+    sleep 10
+    /etc/init.d/zerotier restart 2>/dev/null || true
+    logger -t nss-recover "Zerotier restarted for new WAN IP"
+fi
 HOTPLUG
 chmod +x package/base-files/files/etc/hotplug.d/iface/99-nss-recover
 
@@ -445,46 +558,24 @@ done
 ./scripts/feeds install -a
 green "==== Prebuild All Done ===="
 
-#NSS配置全保留原有硬件加速项，仅关闭4个高危模块，其余全开启
+#清理 .config 冲突 + 确保关键项
 CFG=".config"
 [ -f "$CFG" ] || touch "$CFG"
 
-sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ecm-nat/d' $CFG
-sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-cake/d' $CFG
-sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi/d' $CFG
-sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ppe/d' $CFG
+# 精确删除可能冲突的 NSS 禁用模块（保留显式注释禁用行）
+sed -i '/^CONFIG_PACKAGE_kmod-qca-nss-ecm-nat=/d' $CFG
+sed -i '/^CONFIG_PACKAGE_kmod-qca-nss-drv-cake=/d' $CFG
+sed -i '/^CONFIG_PACKAGE_kmod-qca-nss-drv-wifi=/d' $CFG
+sed -i '/^CONFIG_PACKAGE_kmod-qca-nss-ppe[^a-z]*=/d' $CFG
 
-cat >>$CFG <<'NSS_ALL_CONF'
-CONFIG_NSS_MEM_PROFILE_MEDIUM=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-fullcone=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-pppoe-tap=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-pppoe-relay=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-tun=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-gre=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-ipsec=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-udp-lite=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-vlan=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-policer=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-qdisc=y
+# 确保 NSS 流量预加载开启
+grep -q "CONFIG_PACKAGE_kmod-qca-nss-drv-flow-preload=y" "$CFG" || \
+    echo "CONFIG_PACKAGE_kmod-qca-nss-drv-flow-preload=y" >> "$CFG"
+grep -q "CONFIG_NSS_DRV_FLOW_PRELOAD_ENABLE=y" "$CFG" || \
+    echo "CONFIG_NSS_DRV_FLOW_PRELOAD_ENABLE=y" >> "$CFG"
 
-CONFIG_PACKAGE_kmod-qca-nss-drv-flow-preload=y
-CONFIG_NSS_DRV_FLOW_PRELOAD_ENABLE=y
-CONFIG_NSS_DRV_FLOW_CACHE=y
-CONFIG_NSS_ECM_PRELOAD_CONN=y
-CONFIG_NSS_ECM_FLOW_CACHE=y
-CONFIG_PACKAGE_kmod-qca-nss-drv-reassemble=y
-CONFIG_NSS_DRV_REASSEMBLE_ENABLE=y
+# 确保 PPPoE 基本组件
+grep -q "CONFIG_PACKAGE_kmod-pppoe=y" "$CFG" || \
+    echo "CONFIG_PACKAGE_kmod-pppoe=y" >> "$CFG"
 
-CONFIG_PACKAGE_nssinfo=y
-CONFIG_PACKAGE_nssstats=y
-CONFIG_PACKAGE_luci-app-nssinfo=y
-CONFIG_PACKAGE_luci-i18n-nssinfo-zh-cn=y
-
-CONFIG_KERNEL_NF_FLOW_OFFLOAD=y
-CONFIG_PACKAGE_kmod-nft-flow=y
-CONFIG_KERNEL_NF_CONNTRACK_MARK=y
-CONFIG_KERNEL_NF_CONNTRACK_ZONES=y
-CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
-NSS_ALL_CONF
-
-green "==== 全插件保留+稳速优化完成 ===="
+green "==== 全插件保留+PPPoE优化+长期守护完成 ===="
