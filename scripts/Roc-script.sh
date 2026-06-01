@@ -21,7 +21,7 @@ sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_genera
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 }
 
-#3 NSS DTS 固定64MB专属预留内存（硬件级冗余）
+#3 NSS DTS 固定64MB专属预留内存
 green "====3 NSS DDR 64M Reserve===="
 DTS_FILE=""
 for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m.dtsi,ipq60xx/ipq6018-512m.dtsi};do
@@ -63,17 +63,15 @@ LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
 #7 跳过代理源码
 green "====7 Skip All Proxy Source===="
 
-#8 【终极容错优化】文件不存在直接跳过sed，杜绝set -e异常退出
+#8 启动优化容错
 green "====8 Startup Order Optimize Enable ===="
 optimize_start(){
 local f="$1" s="$2"
-#无文件直接返回，不执行sed报错
 [ ! -f "$f" ] && return 0
 sed -i "s/START=.*/START=$s/" "$f"
 sed -i "s/USE_PROCD=.*/USE_PROCD=1/" "$f"
 }
 
-#仅nss_packages存在才处理NSS驱动、删除冲突PPE
 if [ -d feeds/nss_packages ];then
 [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe
 optimize_start feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init 10
@@ -82,7 +80,6 @@ optimize_start feeds/nss_packages/qca-nss-dp/files/qca-nss-dp.init 12
 optimize_start feeds/nss_packages/qca-ssdk/files/qca-ssdk.init 13
 fi
 
-#系统通用服务时序修改
 optimize_start package/base-files/files/etc/init.d/boot 15
 optimize_start package/system/zram-swap/files/zram-swap.init 16
 optimize_start package/utils/irqbalance/files/irqbalance.init 17
@@ -100,24 +97,26 @@ optimize_start feeds/luci/applications/luci-app-autoreboot/root/etc/init.d/autor
 optimize_start feeds/luci/applications/luci-app-watchcat/root/etc/init.d/watchcat 61
 optimize_start package/luci-app-athena-led/root/etc/init.d/athena_led 95
 
-#9 编译小补丁
+#9 小补丁
 TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1||true)
 [ -f "$TS" ] && sed -i '/\/files/d' "$TS"
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#首页嵌入NSS硬件状态（Argon+Aurora双主题）
+#====【修复引号BUG】首页NSS显示====
 green "==== Inject NSS Status To Argon & Aurora Homepage ===="
+#Argon
 ARGON_PATH="feeds/luci/themes/luci-theme-argon/luasrc/view/themes/argon/status.htm"
-[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \'CPU.*HWE.*\' /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \'/tcp|udp|total/{printf $0\" \"}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $ARGON_PATH
+[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \047CPU.*HWE.*\047 /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \047/tcp|udp|total/{printf $0\" \"}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$ARGON_PATH"
 
+#Aurora
 AURORA_PATH="feeds/luci/themes/luci-theme-aurora/luasrc/view/themes/aurora/status.htm"
-[ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \'/tcp|udp|total/{print $0}\' /sys/kernel/debug/ecm/preload_stats")%></div>' $AURORA_PATH
+[ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \047/tcp|udp|total/{print $0}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$AURORA_PATH"
 
-#10 系统默认配置预埋
+#10 预埋默认配置
 mkdir -p package/base-files/files/etc/uci-defaults
 
-#①时区+系统中文环境
+#①时区中文
 cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
 #!/bin/sh
 uci set system.@system[0].zonename='Asia/Shanghai'
@@ -130,7 +129,7 @@ echo "export LANG=zh_CN.UTF-8" >> /etc/profile
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 
-#②内存调度+NSS预加载参数+定时清缓存
+#②内存优化
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
 echo 60 >/proc/sys/vm/swappiness
@@ -146,7 +145,7 @@ grep -q drop_caches /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 >/proc/s
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
 
-#③ECM全预加载、最大连接80000
+#③ECM配置
 cat > package/base-files/files/etc/uci-defaults/93-nss-ecm <<'EOF'
 #!/bin/sh
 uci -q get ecm.@global[0] >/dev/null || uci add ecm global
@@ -157,7 +156,7 @@ uci commit ecm
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-nss-ecm
 
-#④防火墙ZT区域+全锥NAT、注释异常ZT配置根治反复重启
+#④防火墙+ZT修复
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
 if ! uci -q get fstab.@global[0];then
@@ -200,7 +199,7 @@ uci set firewall.rule[-1].dest_port='9993'
 uci set firewall.rule[-1].target='ACCEPT'
 uci commit firewall
 
-#禁用异常local.conf，修复zerotier无限启停
+#注释异常ZT配置
 #mkdir -p /var/lib/zerotier-one
 #cat > /var/lib/zerotier-one/local.conf <<'ZTCFG'
 #{
@@ -214,19 +213,18 @@ uci commit firewall
 #}
 #}
 #ZTCFG
-#保留开机自动修正ZT网卡MTU
 echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print $2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >>/etc/rc.local
 /etc/init.d/zerotier enable
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/92-fix-all
 
-#收尾刷新feeds
+#刷新feed
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 green "==== Prebuild All Done ===="
 
-#自动写入NSS全套冗余.config配置
+#写入.config NSS配置
 CFG=".config"
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ecm-nat/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-cake/d' $CFG
@@ -274,4 +272,4 @@ CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
 # CONFIG_PACKAGE_kmod-qca-nss-ppe-nat is not set
 NSS_ALL_CONF
 
-green "==== NSS全冗余+ECM预加载+启动时序+首页NSS状态栏+ZT崩溃修复 全部优化完毕 ===="
+green "==== NSS全冗余+ECM预加载+首页状态栏+ZT修复全部完成 ===="
