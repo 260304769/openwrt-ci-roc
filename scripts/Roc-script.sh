@@ -104,13 +104,13 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#首页NSS状态栏（已修复引号转义，无EOF报错）
+#首页NSS状态栏｜自适应：内容短单行、超长自动两行
 green "==== Inject NSS Status To Argon & Aurora Homepage ===="
 ARGON_PATH="feeds/luci/themes/luci-theme-argon/luasrc/view/themes/argon/status.htm"
-[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \047CPU.*HWE.*\047 /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \047/tcp|udp|total/{printf $0\" \"}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$ARGON_PATH"
+[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px;word-wrap:break-word;white-space:normal">NSS:<%=luci.sys.exec("grep -o \047CPU.*HWE.*\047 /sys/kernel/debug/nss/stats")%> ECM:<%=luci.sys.exec("awk \047/tcp|udp|total/{printf $0}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$ARGON_PATH"
 
 AURORA_PATH="feeds/luci/themes/luci-theme-aurora/luasrc/view/themes/aurora/status.htm"
-[ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \047/tcp|udp|total/{print $0}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$AURORA_PATH"
+[ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555;word-wrap:break-word;white-space:normal">NSS:<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%> ECM:<%=luci.sys.exec("awk \047/tcp|udp|total/{print $0}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$AURORA_PATH"
 
 #10 预埋系统配置｜全插件保留，仅优化稳定参数
 mkdir -p package/base-files/files/etc/uci-defaults
