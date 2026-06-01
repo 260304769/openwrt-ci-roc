@@ -14,14 +14,14 @@ green "====1 Feed Update===="
 ./scripts/feeds install -a
 ./scripts/feeds install coreutils ca-bundle jq curl libopenssl-legacy
 
-#2 LAN地址+主机名固化
+#2 LAN 192.168.10.1 hostname=Roc
 green "====2 Modify LAN&Hostname===="
 [ -f package/base-files/files/bin/config_generate ] && {
 sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate
 sed -i "s/hostname='.*'/hostname='Roc'/g" package/base-files/files/bin/config_generate
 }
 
-#3 DTS硬改64MB NSS独占内存
+#3 NSS DTS 固定64MB专属预留内存
 green "====3 NSS DDR 64M Reserve===="
 DTS_FILE=""
 for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m.dtsi,ipq60xx/ipq6018-512m.dtsi};do
@@ -29,7 +29,7 @@ for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m
 done
 [ -n "$DTS_FILE" ] && sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE"
 
-#4 清理旧插件源码
+#4 清理旧源码
 green "====4 Clean Old Feed Source===="
 rm -rf feeds/luci/applications/luci-app-{argon-config,frpc,frps} feeds/luci/themes/luci-theme-argon
 for NAME in "${PKG_LIST[@]}";do
@@ -37,15 +37,15 @@ DIRS=$(find feeds/luci feeds/packages -maxdepth 3 -iname "*$NAME*" 2>/dev/null||
 [ -n "$DIRS" ] && rm -rf $DIRS
 done
 
-#5 拉取FRP穿透
+#5 拉FRP
 green "====5 Pull FRP===="
 git clone --depth=1 https://github.com/laipeng668/luci feeds/_tmpfrp
 mv feeds/_tmpfrp/applications/luci-app-frpc feeds/luci/applications/
 mv feeds/_tmpfrp/applications/luci-app-frps feeds/luci/applications/
 rm -rf feeds/_tmpfrp
 
-#6 主题+必备工具插件（只留刚需）
-green "====6 Pull Core Plugins===="
+#6 全量拉取所有主题+插件（全部保留不精简）
+green "====6 Pull Theme & Plugins===="
 git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
 git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
 git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora
@@ -60,11 +60,11 @@ LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
 [ -f "$LED_INIT" ] && chmod +x "$LED_INIT"
 [ -f "$LED_BIN" ] && chmod +x "$LED_BIN"
 
-#7 跳过代理类源码
-green "====7 Skip Proxy Source===="
+#7 跳过代理源码
+green "====7 Skip All Proxy Source===="
 
-#8 启动时序优化｜缺文件自动跳过防编译报错
-green "====8 Startup Order Optimize ===="
+#8 启动优化容错
+green "====8 Startup Order Optimize Enable ===="
 optimize_start(){
 local f="$1" s="$2"
 [ ! -f "$f" ] && return 0
@@ -72,7 +72,7 @@ sed -i "s/START=.*/START=$s/" "$f"
 sed -i "s/USE_PROCD=.*/USE_PROCD=1/" "$f"
 }
 
-#移除PPE冲突驱动
+#仅删除PPE（唯一不稳定驱动，其余NSS组件全保留）
 if [ -d feeds/nss_packages ];then
 [ -d feeds/nss_packages/qca-nss-ppe ] && rm -rf feeds/nss_packages/qca-nss-ppe
 optimize_start feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init 10
@@ -104,18 +104,18 @@ TS=$(find feeds/packages -maxdepth3 -name tailscale/Makefile 2>/dev/null|head -1
 RU=$(find feeds/packages -maxdepth3 -name rust/Makefile 2>/dev/null|head -1||true)
 [ -f "$RU" ] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU"
 
-#10 首页NSS实时状态（转义修复无引号报错）
-green "==== Inject NSS Info To Homepage ===="
+#首页NSS状态栏（已修复引号转义，无EOF报错）
+green "==== Inject NSS Status To Argon & Aurora Homepage ===="
 ARGON_PATH="feeds/luci/themes/luci-theme-argon/luasrc/view/themes/argon/status.htm"
-[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">NSS：<%=luci.sys.exec("grep -o \047CPU.*HWE.*\047 /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \047/tcp|udp|total/{printf $0\" \"}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$ARGON_PATH"
+[ -f "$ARGON_PATH" ] && sed -i '/<div class="system-info">/a\<div style="margin:4px 0;color:#666;font-size:14px">CPU使用率(%)：<%=luci.sys.exec("grep -o \047CPU.*HWE.*\047 /sys/kernel/debug/nss/stats")%><br>ECM：<%=luci.sys.exec("awk \047/tcp|udp|total/{printf $0\" \"}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$ARGON_PATH"
 
 AURORA_PATH="feeds/luci/themes/luci-theme-aurora/luasrc/view/themes/aurora/status.htm"
 [ -f "$AURORA_PATH" ] && sed -i '/system-info/a\<div style="margin:5px 0;font-size:13px;color:#555">NSS状态：<%=luci.sys.exec("grep CPU /sys/kernel/debug/nss/stats")%><br>ECM流表：<%=luci.sys.exec("awk \047/tcp|udp|total/{print $0}\047 /sys/kernel/debug/ecm/preload_stats")%></div>' "$AURORA_PATH"
 
-#11 系统默认配置预埋
+#10 预埋系统配置｜全插件保留，仅优化稳定参数
 mkdir -p package/base-files/files/etc/uci-defaults
 
-## ①时区+中文环境
+#①时区+中文
 cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
 #!/bin/sh
 uci set system.@system[0].zonename='Asia/Shanghai'
@@ -128,7 +128,7 @@ echo "export LANG=zh_CN.UTF-8" >> /etc/profile
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 
-## ②内存&NSS稳速参数（breeze原厂）
+#②内存+NSS稳定参数 flow_preload=2（breeze稳速参数）
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
 echo 60 >/proc/sys/vm/swappiness
@@ -137,16 +137,14 @@ echo 5 >/proc/sys/vm/dirty_background_ratio
 echo 1024 >/proc/sys/vm/min_free_kbytes
 echo "net.ipv4.tcp_fastopen=3">>/etc/sysctl.conf
 echo "net.netfilter.nf_conntrack_early_offload=1">>/etc/sysctl.conf
-#flow-preload=2 稳速最优值
 [ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable
 [ -d /sys/module/qca_nss_drv/parameters ] && echo 1 >/sys/module/qca_nss_drv/parameters/pbuf_high_watermark
-#2小时自动释放缓存
 grep -q drop_caches /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 >/proc/sys/vm/drop_caches">>/etc/crontabs/root
 /etc/init.d/cron enable
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
 
-## ③ECM参数（内核标准65535，稳流不溢出）
+#③ECM连接数改为标准65535，兼顾满载稳定不溢出
 cat > package/base-files/files/etc/uci-defaults/93-nss-ecm <<'EOF'
 #!/bin/sh
 uci -q get ecm.@global[0] >/dev/null || uci add ecm global
@@ -157,23 +155,25 @@ uci commit ecm
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-nss-ecm
 
-## ④防火墙+ZT原生配置（彻底修复ZT循环重启）
+#④防火墙+ZT原生配置，删除自定义local.conf杜绝ZT反复重启
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
-if ! uci -q get fstab.@global[0];then uci add fstab global;fi
+if ! uci -q get fstab.@global[0];then
+    uci add fstab global
+fi
 uci set fstab.@global[0].extroot='0'
 uci commit fstab
 
-if ! uci -q get oaf.@global[0];then uci add oaf global;fi
+if ! uci -q get oaf.@global[0];then
+    uci add oaf global
+fi
 uci set oaf.@global[0].enable='0'
 uci commit oaf
 
 sed -i '/mkdir -p \/var\/run\/hostapd/d' /etc/init.d/wireless
 sed -i 's/start_service() {/start_service() {\nmkdir -p \/var\/run\/hostapd\nchmod 777 \/var\/run\/hostapd/' /etc/init.d/wireless
 
-#全锥NAT
 uci set firewall.@defaults[0].fullcone='1'
-#ZT防火墙区域
 uci add firewall zone
 uci set firewall.zone[-1].name='zerotier'
 uci set firewall.zone[-1].device='zt+'
@@ -190,7 +190,6 @@ uci add firewall forwarding
 uci set firewall.forwarding[-1].src='zerotier'
 uci set firewall.forwarding[-1].dest='lan'
 
-#放行ZT9993端口
 uci add firewall rule
 uci set firewall.rule[-1].name='ZT-9993-UDP'
 uci set firewall.rule[-1].src='wan'
@@ -199,19 +198,19 @@ uci set firewall.rule[-1].dest_port='9993'
 uci set firewall.rule[-1].target='ACCEPT'
 uci commit firewall
 
-#禁用自定义ZT配置，原生运行防崩溃
+#彻底注释自定义ZT配置，原生运行防崩溃
 echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print $2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >>/etc/rc.local
 /etc/init.d/zerotier enable
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/92-fix-all
 
-#刷新feed
+#收尾刷新feed
 ./scripts/feeds update -a
 ./scripts/feeds install -a
-green "==== Prebuild Finish ===="
+green "==== Prebuild All Done ===="
 
-#写入.config NSS硬件加速配置（只稳不留坑）
+#NSS配置全保留原有硬件加速项，仅关闭4个高危模块，其余全开启
 CFG=".config"
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ecm-nat/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-cake/d' $CFG
@@ -250,7 +249,7 @@ CONFIG_KERNEL_NF_CONNTRACK_MARK=y
 CONFIG_KERNEL_NF_CONNTRACK_ZONES=y
 CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
 
-#高危不稳定模块全部关闭
+#仅关闭故障源模块
 # CONFIG_PACKAGE_kmod-qca-nss-ecm-nat is not set
 # CONFIG_PACKAGE_kmod-qca-nss-drv-cake is not set
 # CONFIG_PACKAGE_kmod-qca-nss-drv-wifi is not set
@@ -259,4 +258,4 @@ CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
 # CONFIG_PACKAGE_kmod-qca-nss-ppe-nat is not set
 NSS_ALL_CONF
 
-green "====【稳速终极版配置完成】===="
+green "==== 全插件保留+稳速优化完成 ===="
