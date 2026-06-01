@@ -8,9 +8,13 @@ cd "$OPENWRT_PATH"
 
 PKG_LIST=(argon-config frpc frps argon)
 
-#1 feed更新
+#1 feed更新（带重试）
 green "====1 Feed Update===="
-./scripts/feeds update -a
+for i in 1 2 3; do
+    ./scripts/feeds update -a && break
+    yellow "Feed update retry $i/3..."
+    sleep 5
+done
 ./scripts/feeds install -a
 ./scripts/feeds install coreutils ca-bundle jq curl libopenssl-legacy
 
@@ -27,7 +31,7 @@ DTS_FILE=""
 for path in target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/{ipq6018-512m.dtsi,ipq60xx/ipq6018-512m.dtsi};do
 [ -f "$path" ] && DTS_FILE="$path" && break
 done
-[ -n "$DTS_FILE" ] && sed -i 's/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/' "$DTS_FILE"
+[ -n "$DTS_FILE" ] && sed -i '/nss\|reserved/{s/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/}' "$DTS_FILE"
 
 #4 清理旧源码
 green "====4 Clean Old Feed Source===="
@@ -37,23 +41,35 @@ DIRS=$(find feeds/luci feeds/packages -maxdepth 3 -iname "*$NAME*" 2>/dev/null||
 [ -n "$DIRS" ] && rm -rf $DIRS
 done
 
-#5 拉FRP
+#5 拉FRP（带容错）
 green "====5 Pull FRP===="
-git clone --depth=1 https://github.com/laipeng668/luci feeds/_tmpfrp
-mv feeds/_tmpfrp/applications/luci-app-frpc feeds/luci/applications/
-mv feeds/_tmpfrp/applications/luci-app-frps feeds/luci/applications/
-rm -rf feeds/_tmpfrp
+if git clone --depth=1 https://github.com/laipeng668/luci feeds/_tmpfrp 2>/dev/null; then
+    mv feeds/_tmpfrp/applications/luci-app-frpc feeds/luci/applications/
+    mv feeds/_tmpfrp/applications/luci-app-frps feeds/luci/applications/
+    rm -rf feeds/_tmpfrp
+    green "FRP cloned successfully"
+else
+    yellow "FRP clone failed, check network or repo - skipping..."
+fi
 
-#6 全量拉取所有主题+插件（全部保留不精简）
+#6 全量拉取所有主题+插件（全部保留不精简，带容错）
 green "====6 Pull Theme & Plugins===="
-git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon feeds/luci/themes/luci-theme-argon
-git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config feeds/luci/applications/luci-app-argon-config
-git clone --depth=1 https://github.com/eamonxg/luci-theme-aurora feeds/luci/themes/luci-theme-aurora
-git clone --depth=1 https://github.com/eamonxg/luci-app-aurora-config feeds/luci/applications/luci-app-aurora-config
+clone_repo() {
+    local url="$1" dest="$2" name="$3"
+    if git clone --depth=1 "$url" "$dest" 2>/dev/null; then
+        green "  ✓ $name"
+    else
+        yellow "  ✗ $name clone failed, skipping..."
+    fi
+}
 
-git clone --depth=1 https://github.com/gdy666/luci-app-lucky package/luci-app-lucky
-git clone --depth=1 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
-git clone --depth=1 https://github.com/NONGFAH/luci-app-athena-led package/luci-app-athena-led
+clone_repo "https://github.com/jerrykuku/luci-theme-argon" "feeds/luci/themes/luci-theme-argon" "argon-theme"
+clone_repo "https://github.com/jerrykuku/luci-app-argon-config" "feeds/luci/applications/luci-app-argon-config" "argon-config"
+clone_repo "https://github.com/eamonxg/luci-theme-aurora" "feeds/luci/themes/luci-theme-aurora" "aurora-theme"
+clone_repo "https://github.com/eamonxg/luci-app-aurora-config" "feeds/luci/applications/luci-app-aurora-config" "aurora-config"
+clone_repo "https://github.com/gdy666/luci-app-lucky" "package/luci-app-lucky" "lucky"
+clone_repo "https://github.com/destan19/OpenAppFilter.git" "package/OpenAppFilter" "OAF"
+clone_repo "https://github.com/NONGFAH/luci-app-athena-led" "package/luci-app-athena-led" "athena-led"
 
 LED_INIT="package/luci-app-athena-led/root/etc/init.d/athena_led"
 LED_BIN="package/luci-app-athena-led/root/usr/sbin/athena-led"
@@ -121,25 +137,46 @@ cat > package/base-files/files/etc/uci-defaults/95-set-lang <<'EOF'
 uci set system.@system[0].zonename='Asia/Shanghai'
 uci set system.@system[0].timezone='CST-8'
 uci set luci.main.lang='zh_cn'
-uci set luci.main.autolang='0'
 uci commit system
 uci commit luci
 echo "export LANG=zh_CN.UTF-8" >> /etc/profile
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/95-set-lang
 
-#②内存+NSS稳定参数 flow_preload=2（breeze稳速参数）
+#②内存+NSS稳定参数（性能优化版）
 cat > package/base-files/files/etc/uci-defaults/90-memoptimize <<'EOF'
 #!/bin/sh
+# 脏页控制
 echo 60 >/proc/sys/vm/swappiness
 echo 10 >/proc/sys/vm/dirty_ratio
 echo 5 >/proc/sys/vm/dirty_background_ratio
-echo 1024 >/proc/sys/vm/min_free_kbytes
-echo "net.ipv4.tcp_fastopen=3">>/etc/sysctl.conf
-echo "net.netfilter.nf_conntrack_early_offload=1">>/etc/sysctl.conf
+
+# 按内存自适应 min_free_kbytes
+total_mem=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 524288)
+if [ "$total_mem" -gt 1048576 ]; then
+    echo 8192 >/proc/sys/vm/min_free_kbytes
+elif [ "$total_mem" -gt 524288 ]; then
+    echo 4096 >/proc/sys/vm/min_free_kbytes
+else
+    echo 2048 >/proc/sys/vm/min_free_kbytes
+fi
+
+# TCP Fast Open + 连接跟踪早期卸载
+grep -q "tcp_fastopen" /etc/sysctl.conf || echo "net.ipv4.tcp_fastopen=3" >> /etc/sysctl.conf
+grep -q "nf_conntrack_early_offload" /etc/sysctl.conf || echo "net.netfilter.nf_conntrack_early_offload=1" >> /etc/sysctl.conf
+
+# BBR 拥塞控制（内核支持时自动生效）
+grep -q "tcp_congestion_control" /etc/sysctl.conf || {
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+}
+
+# NSS 稳速参数
 [ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable
-[ -d /sys/module/qca_nss_drv/parameters ] && echo 1 >/sys/module/qca_nss_drv/parameters/pbuf_high_watermark
-grep -q drop_caches /etc/crontabs/root || echo "0 */2 * * * sync;echo 3 >/proc/sys/vm/drop_caches">>/etc/crontabs/root
+[ -d /sys/module/qca_nss_drv/parameters ] && echo 5 >/sys/module/qca_nss_drv/parameters/pbuf_high_watermark
+
+# 定时缓存回收（每6小时释放pagecache，不释放dentry/inode）
+grep -q drop_caches /etc/crontabs/root || echo "0 */6 * * * sync;echo 1 >/proc/sys/vm/drop_caches" >> /etc/crontabs/root
 /etc/init.d/cron enable
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/90-memoptimize
@@ -155,63 +192,263 @@ uci commit ecm
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/93-nss-ecm
 
-#④防火墙+ZT原生配置，删除自定义local.conf杜绝ZT反复重启
+#④防火墙+ZT原生配置（全量匹配精确清理版）
 cat > package/base-files/files/etc/uci-defaults/92-fix-all <<'EOF'
 #!/bin/sh
-if ! uci -q get fstab.@global[0];then
+# fstab 初始化
+if ! uci -q get fstab.@global[0] >/dev/null; then
     uci add fstab global
 fi
 uci set fstab.@global[0].extroot='0'
 uci commit fstab
 
-if ! uci -q get oaf.@global[0];then
+# OAF 默认关闭
+if ! uci -q get oaf.@global[0] >/dev/null; then
     uci add oaf global
 fi
 uci set oaf.@global[0].enable='0'
 uci commit oaf
 
+# hostapd 目录修复
 sed -i '/mkdir -p \/var\/run\/hostapd/d' /etc/init.d/wireless
 sed -i 's/start_service() {/start_service() {\nmkdir -p \/var\/run\/hostapd\nchmod 777 \/var\/run\/hostapd/' /etc/init.d/wireless
 
+# FullCone NAT
 uci set firewall.@defaults[0].fullcone='1'
+
+# === 精确清理已存在的 zerotier 配置 ===
+for section in $(uci show firewall 2>/dev/null | grep "\.name='zerotier'" | cut -d= -f1); do
+    uci delete "$section" 2>/dev/null || true
+done
+
+for section in $(uci show firewall 2>/dev/null | grep -E "\.(src|dest)='(lan|zerotier)'" | cut -d. -f1-2 | sort -u); do
+    s=$(uci -q get "$section.src" 2>/dev/null || true)
+    d=$(uci -q get "$section.dest" 2>/dev/null || true)
+    if { [ "$s" = "lan" ] && [ "$d" = "zerotier" ]; } || { [ "$s" = "zerotier" ] && [ "$d" = "lan" ]; }; then
+        uci delete "$section" 2>/dev/null || true
+    fi
+done
+
+for section in $(uci show firewall 2>/dev/null | grep "\.name='ZT-9993-UDP'" | cut -d= -f1); do
+    uci delete "$section" 2>/dev/null || true
+done
+
+# === 重建 zerotier 配置 ===
 uci add firewall zone
-uci set firewall.zone[-1].name='zerotier'
-uci set firewall.zone[-1].device='zt+'
-uci set firewall.zone[-1].input='ACCEPT'
-uci set firewall.zone[-1].output='ACCEPT'
-uci set firewall.zone[-1].forward='ACCEPT'
-uci set firewall.zone[-1].masq='1'
-uci set firewall.zone[-1].mtu_fix='1'
+uci set firewall.@zone[-1].name='zerotier'
+uci set firewall.@zone[-1].device='zt+'
+uci set firewall.@zone[-1].input='ACCEPT'
+uci set firewall.@zone[-1].output='ACCEPT'
+uci set firewall.@zone[-1].forward='ACCEPT'
+uci set firewall.@zone[-1].masq='1'
+uci set firewall.@zone[-1].mtu_fix='1'
 
 uci add firewall forwarding
-uci set firewall.forwarding[-1].src='lan'
-uci set firewall.forwarding[-1].dest='zerotier'
+uci set firewall.@forwarding[-1].src='lan'
+uci set firewall.@forwarding[-1].dest='zerotier'
+
 uci add firewall forwarding
-uci set firewall.forwarding[-1].src='zerotier'
-uci set firewall.forwarding[-1].dest='lan'
+uci set firewall.@forwarding[-1].src='zerotier'
+uci set firewall.@forwarding[-1].dest='lan'
 
 uci add firewall rule
-uci set firewall.rule[-1].name='ZT-9993-UDP'
-uci set firewall.rule[-1].src='wan'
-uci set firewall.rule[-1].proto='udp'
-uci set firewall.rule[-1].dest_port='9993'
-uci set firewall.rule[-1].target='ACCEPT'
+uci set firewall.@rule[-1].name='ZT-9993-UDP'
+uci set firewall.@rule[-1].src='wan'
+uci set firewall.@rule[-1].proto='udp'
+uci set firewall.@rule[-1].dest_port='9993'
+uci set firewall.@rule[-1].target='ACCEPT'
+
 uci commit firewall
 
-#彻底注释自定义ZT配置，原生运行防崩溃
-echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print $2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >>/etc/rc.local
+# ZT MTU 优化（幂等保护）
+grep -q "ZTIF=" /etc/rc.local || echo 'sleep 8;ZTIF=$(ip link|grep zt|awk "{print \$2}"|sed s/://);[ -n "$ZTIF" ]&&ip link set $ZTIF mtu 1400' >> /etc/rc.local
 /etc/init.d/zerotier enable
+
 exit 0
 EOF
 chmod +x package/base-files/files/etc/uci-defaults/92-fix-all
 
-#收尾刷新feed
-./scripts/feeds update -a
+#⑤ OOM 调优 + 内核参数
+cat > package/base-files/files/etc/uci-defaults/91-oom-tune <<'EOF'
+#!/bin/sh
+grep -q "vm.panic_on_oom" /etc/sysctl.conf || echo "vm.panic_on_oom=0" >> /etc/sysctl.conf
+grep -q "vm.oom_kill_allocating_task" /etc/sysctl.conf || echo "vm.oom_kill_allocating_task=0" >> /etc/sysctl.conf
+grep -q "kernel.panic_on_oops" /etc/sysctl.conf || echo "kernel.panic_on_oops=10" >> /etc/sysctl.conf
+[ -w /sys/kernel/debug/kmemleak ] && echo "scan=0" > /sys/kernel/debug/kmemleak 2>/dev/null || true
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/91-oom-tune
+
+#⑥ Zram 防泄漏参数
+cat > package/base-files/files/etc/uci-defaults/94-zram-tune <<'EOF'
+#!/bin/sh
+if [ -d /sys/block/zram0 ]; then
+    echo 4 > /sys/block/zram0/max_comp_streams 2>/dev/null || true
+    echo 40 > /proc/sys/vm/swappiness 2>/dev/null || true
+fi
+EOF
+chmod +x package/base-files/files/etc/uci-defaults/94-zram-tune
+
+#11 长期运行守护｜防内存泄漏 + 关键服务自动恢复
+green "====11 Long-Run Guardian ===="
+mkdir -p package/base-files/files/etc/hotplug.d/iface
+mkdir -p package/base-files/files/usr/bin
+
+#① 守护进程主程序
+cat > package/base-files/files/usr/bin/roc-guardian <<'GUARDIAN'
+#!/bin/sh
+# Roc Guardian v1.0 - 长期运行守护
+LOG_TAG="roc-guardian"
+MEM_THRESHOLD=85
+PROC_THRESHOLD=300
+
+PROTECT_PROCS="
+  /usr/sbin/dnsmasq:-500
+  /usr/sbin/uhttpd:-500
+  /usr/sbin/dropbear:-500
+  /usr/sbin/rpcd:-400
+  /usr/sbin/zerotier-one:-300
+  /usr/sbin/frpc:-300
+  /usr/sbin/frps:-300
+"
+
+log() { logger -t "$LOG_TAG" -p daemon.info "$1"; }
+
+protect_oom() {
+    for entry in $PROTECT_PROCS; do
+        proc_path="${entry%%:*}"
+        score="${entry##*:}"
+        pid=$(pgrep -f "$proc_path" 2>/dev/null | head -1)
+        [ -n "$pid" ] && [ -d "/proc/$pid" ] && {
+            echo "$score" > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+        }
+    done
+}
+
+check_memory() {
+    mem_used=$(awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf "%.0f",(t-a)*100/t}' /proc/meminfo 2>/dev/null || echo 0)
+    if [ "$mem_used" -gt 95 ]; then
+        log "CRITICAL: memory ${mem_used}%, emergency recovery"
+        sync
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        /etc/init.d/uhttpd restart 2>/dev/null || true
+        /etc/init.d/rpcd restart 2>/dev/null || true
+    elif [ "$mem_used" -gt "$MEM_THRESHOLD" ]; then
+        log "WARNING: memory ${mem_used}%, releasing pagecache"
+        sync
+        echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    fi
+}
+
+check_processes() {
+    for entry in $PROTECT_PROCS; do
+        proc_path="${entry%%:*}"
+        proc_name=$(basename "$proc_path")
+        if ! pgrep -f "$proc_path" >/dev/null 2>&1; then
+            log "Process $proc_name dead, restarting..."
+            case "$proc_name" in
+                dnsmasq)   /etc/init.d/dnsmasq restart 2>/dev/null ;;
+                uhttpd)    /etc/init.d/uhttpd restart 2>/dev/null ;;
+                dropbear)  /etc/init.d/dropbear restart 2>/dev/null ;;
+                rpcd)      /etc/init.d/rpcd restart 2>/dev/null ;;
+                zerotier*) /etc/init.d/zerotier restart 2>/dev/null ;;
+                frpc|frps) /etc/init.d/$proc_name restart 2>/dev/null ;;
+            esac
+            log "Process $proc_name restart attempted"
+        fi
+    done
+}
+
+check_nss() {
+    if [ -d /sys/kernel/debug/nss ]; then
+        nss_stats=$(cat /sys/kernel/debug/nss/stats 2>/dev/null | head -5)
+        if echo "$nss_stats" | grep -q "NSS HANG\|firmware crash"; then
+            log "NSS hang detected, reloading drivers..."
+            /etc/init.d/qca-nss-drv restart 2>/dev/null || true
+            /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
+        fi
+    fi
+}
+
+check_conntrack() {
+    if [ -f /proc/sys/net/netfilter/nf_conntrack_count ]; then
+        count=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+        max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 65535)
+        if [ "$count" -gt $((max * 80 / 100)) ]; then
+            log "WARNING: conntrack ${count}/${max} > 80%"
+            echo 600 > /proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established 2>/dev/null || true
+        fi
+    fi
+}
+
+check_proc_count() {
+    count=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
+    [ "$count" -gt "$PROC_THRESHOLD" ] && log "WARNING: process count $count > $PROC_THRESHOLD"
+}
+
+log "Guardian started, PID=$$"
+while true; do
+    protect_oom
+    check_memory
+    check_processes
+    check_nss
+    check_conntrack
+    check_proc_count
+    sleep 300
+done
+GUARDIAN
+chmod +x package/base-files/files/usr/bin/roc-guardian
+
+#② 守护进程 init 脚本
+cat > package/base-files/files/etc/init.d/roc-guardian <<'INIT'
+#!/bin/sh /etc/rc.common
+START=99
+USE_PROCD=1
+NAME=roc-guardian
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/bin/roc-guardian
+    procd_set_param respawn 3600 1 3600
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+stop_service() {
+    killall roc-guardian 2>/dev/null || true
+}
+INIT
+chmod +x package/base-files/files/etc/init.d/roc-guardian
+
+#③ WAN重连NSS加速恢复
+cat > package/base-files/files/etc/hotplug.d/iface/99-nss-recover <<'HOTPLUG'
+#!/bin/sh
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || [ "$INTERFACE" = "wan6" ] || exit 0
+
+logger -t nss-recover "WAN up, recovering NSS acceleration..."
+sleep 3
+
+[ -x /etc/init.d/qca-nss-ecm ] && /etc/init.d/qca-nss-ecm restart 2>/dev/null || true
+[ -d /sys/kernel/debug/nss/flow_preload ] && echo 2 >/sys/kernel/debug/nss/flow_preload/enable 2>/dev/null || true
+[ -d /sys/module/xt_FULLCONENAT ] && echo 1 >/sys/module/xt_FULLCONENAT/parameters/enable 2>/dev/null || true
+HOTPLUG
+chmod +x package/base-files/files/etc/hotplug.d/iface/99-nss-recover
+
+#收尾刷新feed（带重试）
+green "==== Final Feed Refresh ===="
+for i in 1 2 3; do
+    ./scripts/feeds update -a && break
+    yellow "Feed update retry $i/3..."
+    sleep 5
+done
 ./scripts/feeds install -a
 green "==== Prebuild All Done ===="
 
 #NSS配置全保留原有硬件加速项，仅关闭4个高危模块，其余全开启
 CFG=".config"
+[ -f "$CFG" ] || touch "$CFG"
+
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-ecm-nat/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-cake/d' $CFG
 sed -i '/CONFIG_PACKAGE_kmod-qca-nss-drv-wifi/d' $CFG
@@ -248,14 +485,6 @@ CONFIG_PACKAGE_kmod-nft-flow=y
 CONFIG_KERNEL_NF_CONNTRACK_MARK=y
 CONFIG_KERNEL_NF_CONNTRACK_ZONES=y
 CONFIG_KERNEL_NF_CONNTRACK_EARLY_OFFLOAD=y
-
-#仅关闭故障源模块
-# CONFIG_PACKAGE_kmod-qca-nss-ecm-nat is not set
-# CONFIG_PACKAGE_kmod-qca-nss-drv-cake is not set
-# CONFIG_PACKAGE_kmod-qca-nss-drv-wifi is not set
-# CONFIG_PACKAGE_kmod-qca-nss-ppe is not set
-# CONFIG_PACKAGE_kmod-qca-nss-ppe-ipv4 is not set
-# CONFIG_PACKAGE_kmod-qca-nss-ppe-nat is not set
 NSS_ALL_CONF
 
 green "==== 全插件保留+稳速优化完成 ===="
