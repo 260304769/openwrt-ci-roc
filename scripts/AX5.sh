@@ -3,14 +3,13 @@ set -eo pipefail
 
 # ============================================
 # AX5 Stable Build for LiBwrt/openwrt-6.x
-# 版本: v9.6 Final Stable
+# 版本: v9.6 Final Stable (仅 Linux 6.12)
 # 设备: 红米 AX5 / AX5 JDCloud (512M + WiFi)
 # 默认主题: Argon
 # IRQ: 自动调优 (RPS+RFS)
 # NSS-DP: PHY 禁止过度管理 (防抖动)
 # 科学上网: HomeProxy (Sing-Box 内核)
 # 网络: PPPoE IPv4 + IPv6 双栈 + 防火墙优化
-# 上游同步: 自动兼容上游 NSS 内核更新
 # 适配: Ubuntu 24.04 + GitHub Actions Node.js 24
 # ============================================
 
@@ -19,117 +18,91 @@ green()  { printf "\033[32m%s\033[0m\n" "$1"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$1"; }
 
 export OPENWRT_PATH="${OPENWRT_PATH:-$(pwd)}"
-cd "$OPENWRT_PATH" || exit 1
+cd "$OPENWRT_PATH" || { red "进入源码目录失败"; exit 1; }
 
 # ============================================
-# 0. 稳定性预检 + 上游 NSS 兼容
+# 0. 稳定性预检 + 6.12 专属 NSS 兼容
 # ============================================
-green "====0 Stability & Upstream Compat===="
+green "====0 Stability & Compat (Linux 6.12 Only)===="
 
-find . -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
-find . -name "configure" -exec chmod +x {} + 2>/dev/null || true
-rm -f /tmp/.package* /tmp/opkg* /tmp/*.lock 2>/dev/null || true
+find . -type f \( -name "*.sh" -o -name "configure" \) -exec chmod +x {} \; 2>/dev/null || true
+rm -rf /tmp/.package* /tmp/opkg* /tmp/*.lock /tmp/*.tmp 2>/dev/null || true
 
-for dir in package target tools include scripts; do
-  [ -d "$dir" ] || { red "❌ 缺少目录: $dir"; exit 1; }
+REQUIRED_DIRS=(package target tools include scripts)
+for dir in "${REQUIRED_DIRS[@]}"; do
+    [ -d "$dir" ] || { red "❌ 缺失核心目录: $dir"; exit 1; }
 done
 
+# 强制锁定内核 6.12
 KERNEL_VER="6.12"
-_kv=$(grep -oP 'LINUX_VERSION-\d+\.\d+=\K.*' include/kernel-version.mk 2>/dev/null || true)
-[ -n "$_kv" ] && KERNEL_VER="$_kv"
-green "检测内核: $KERNEL_VER"
+green "已锁定内核版本: $KERNEL_VER"
 
+# 6.12 专属 NSS 补丁
 fix_nss_compat() {
-    local kver="$1"
-    local major=$(echo "$kver" | cut -d. -f1)
-    local minor=$(echo "$kver" | cut -d. -f2)
-    
-    if [ "$major" -ge 6 ] && [ "$minor" -ge 1 ]; then
-        for f in $(find feeds package -name "*.c" -path "*/nss/*" 2>/dev/null); do
-            if grep -q "setup_timer" "$f" 2>/dev/null; then
-                sed -i 's/setup_timer(\([^,]*\), \([^,]*\), [^)]*)/timer_setup(\1, \2, 0)/g' "$f" 2>/dev/null || true
-            fi
-        done
-    fi
-    
-    if [ "$major" -ge 6 ] && [ "$minor" -ge 5 ]; then
-        for f in $(find feeds package -name "*.c" -path "*/nss/*" 2>/dev/null); do
-            if grep -q "netif_napi_add.*,.*,.*,.*[0-9]" "$f" 2>/dev/null; then
-                sed -i 's/netif_napi_add(\([^,]*\), \([^,]*\), \([^,]*\), [0-9]*)/netif_napi_add(\1, \2, \3)/g' "$f" 2>/dev/null || true
-            fi
-        done
-    fi
-    
-    if [ "$major" -ge 6 ] && [ "$minor" -ge 12 ]; then
-        for f in $(find feeds package -name "*.c" -name "*.h" -path "*/nss/*" 2>/dev/null); do
-            sed -i 's/PDE_DATA(/pde_data(/g' "$f" 2>/dev/null || true
-        done
-    fi
+    find feeds package -name "*.c" -path "*/nss/*" 2>/dev/null | xargs -r sed -i 's/setup_timer(/timer_setup(/g' 2>/dev/null || true
+    find feeds package -name "*.c" -path "*/nss/*" 2>/dev/null | xargs -r sed -i 's/netif_napi_add(\([^,]*\), \([^,]*\), \([^,]*\), [0-9]*)/netif_napi_add(\1, \2, \3)/g' 2>/dev/null || true
+    find feeds package \( -name "*.c" -o -name "*.h" \) -path "*/nss/*" 2>/dev/null | xargs -r sed -i 's/PDE_DATA(/pde_data(/g' 2>/dev/null || true
 }
 
-fix_nss_compat "$KERNEL_VER"
-green "✅ NSS 内核兼容性已适配 (Linux $KERNEL_VER)"
+fix_nss_compat
+green "✅ NSS 兼容性补丁已应用 (Linux 6.12)"
 
 green "====0 Environment Init===="
+LIbwrt_VER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+green "LiBwrt 版本: $LIbwrt_VER | 内核: $KERNEL_VER"
 
-LIbwrt_VER=$(git rev-parse --short HEAD 2>/dev/null || true)
-[ -z "$LIbwrt_VER" ] && LIbwrt_VER="unknown"
-green "LiBwrt: $LIbwrt_VER | Kernel: $KERNEL_VER"
-
-mkdir -p package/base-files/files/etc/uci-defaults
-mkdir -p package/base-files/files/etc/hotplug.d/iface
-mkdir -p package/base-files/files/usr/bin
+mkdir -p \
+    package/base-files/files/etc/uci-defaults \
+    package/base-files/files/etc/hotplug.d/iface \
+    package/base-files/files/usr/bin
 
 # ============================================
 # 1. Feed 初始化
 # ============================================
 green "====1 Feed Init===="
-if [ ! -f feeds.conf ] && [ ! -f feeds.conf.default ]; then
-    red "Error: No feeds.conf / feeds.conf.default found!"
+if [[ ! -f feeds.conf && ! -f feeds.conf.default ]]; then
+    red "Error: 未找到 feeds.conf / feeds.conf.default"
     exit 1
 fi
 
 FEED_OK=0
 for i in {1..3}; do
-    if ./scripts/feeds update -a; then
+    if timeout 120 ./scripts/feeds update -a; then
         FEED_OK=1
         break
     fi
-    yellow "Feed update retry $i/3 ..."
-    sleep 8
+    yellow "Feed update 重试 $i/3 ..."
+    sleep 10
 done
 
-[ $FEED_OK -ne 1 ] && yellow "Feed update warning, continue..."
+[[ $FEED_OK -ne 1 ]] && yellow "Feed update 警告，继续执行..."
 
 ./scripts/feeds install -a 2>/dev/null || true
 ./scripts/feeds install coreutils ca-bundle jq curl libopenssl-legacy 2>/dev/null || true
 
 # ============================================
-# 2. 冲突彻底清理（全优版）
+# 2. 冲突彻底清理
 # ============================================
 green "====2 Conflict Removal===="
 
 CONFLICT_MODULES="qca-nss-ppe qca-nss-ecm-nat qca-nss-drv-cake qca-nss-drv-wifi zram-backend-lzo"
 for mod in $CONFLICT_MODULES; do
-    find . -path "*/$mod*" -type d 2>/dev/null | while read -r dir; do
-        [ -d "$dir" ] && rm -rf "$dir" 2>/dev/null || true
-    done
+    find . -path "*/$mod*" -type d 2>/dev/null | xargs -r rm -rf 2>/dev/null || true
 done
 
-find package feeds -name "Makefile" 2>/dev/null | while read -r mk_file; do
-    for kmod in iptunnel4 iptunnel6 ppp-async nf-conntrack6 nf-ipt6 nf-nat6; do
-        sed -i "s/+$kmod//g" "$mk_file" 2>/dev/null || true
-    done
-done
+find package feeds -name "Makefile" 2>/dev/null | xargs -r sed -i \
+    -e 's/+iptunnel4//g' \
+    -e 's/+iptunnel6//g' \
+    -e 's/+ppp-async//g' \
+    -e 's/+nf-conntrack6//g' \
+    -e 's/+nf-ipt6//g' \
+    -e 's/+nf-nat6//g' 2>/dev/null || true
 
 for pkg in frpc frps argon-config argon; do
-    count=$(find package feeds -path "*/luci-app-$pkg/Makefile" 2>/dev/null | wc -l)
-    if [ "$count" -gt 1 ]; then
-        find feeds -path "*/luci-app-$pkg" -type d -exec rm -rf {} + 2>/dev/null || true
-    fi
+    find feeds -path "*/luci-app-$pkg" -type d 2>/dev/null | xargs -r rm -rf 2>/dev/null || true
 done
 
-if [ -f .config ]; then
+if [[ -f .config ]]; then
     MUST_COMMENT=(
         "CONFIG_PACKAGE_kmod-qca-nss-ecm-nat"
         "CONFIG_PACKAGE_kmod-qca-nss-drv-cake"
@@ -141,32 +114,27 @@ if [ -f .config ]; then
         "CONFIG_TARGET_ROOTFS_INITRAMFS"
         "CONFIG_KERNEL_PREEMPT_RT"
     )
-    
+
     for key in "${MUST_COMMENT[@]}"; do
-        sed -i "/^${key}[= ]/d; /^# ${key} is not set/d" .config 2>/dev/null || true
+        sed -i "/^${key}/d; /^# ${key} is not set/d" .config 2>/dev/null || true
         echo "# ${key} is not set" >> .config
     done
-    
-    # 强制保留关键配置
+
     grep -q "^CONFIG_TARGET_PER_DEVICE_ROOTFS=y" .config || echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y" >> .config
     grep -q "^CONFIG_TARGET_MULTI_PROFILE=y" .config || echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
-    
+
     for kmod in iptunnel4 iptunnel6 ppp-async nf-conntrack6 nf-ipt6 nf-nat6; do
         sed -i "/CONFIG_PACKAGE_kmod-$kmod/d" .config 2>/dev/null || true
     done
 fi
 
 # ============================================
-# 3. 基础配置
+# 3. 基础配置 + DTS 补丁
 # ============================================
 green "====3 Base Config===="
-if [ -f package/base-files/files/bin/config_generate ]; then
-    if ! grep -q "192.168.10.1" package/base-files/files/bin/config_generate 2>/dev/null; then
-        sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate 2>/dev/null || true
-    fi
-    if ! grep -q "hostname='AX5'" package/base-files/files/bin/config_generate 2>/dev/null; then
-        sed -i "s/hostname='.*'/hostname='AX5'/g" package/base-files/files/bin/config_generate 2>/dev/null || true
-    fi
+if [[ -f package/base-files/files/bin/config_generate ]]; then
+    sed -i 's/192.168.1.1/192.168.10.1/g' package/base-files/files/bin/config_generate 2>/dev/null || true
+    sed -i "s/hostname='.*'/hostname='AX5'/g" package/base-files/files/bin/config_generate 2>/dev/null || true
 fi
 
 DTS_LIST=(
@@ -174,37 +142,37 @@ DTS_LIST=(
     target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq60xx/ipq6018-512m.dtsi
 )
 for dts in "${DTS_LIST[@]}"; do
-    if [ -f "$dts" ] && ! grep -q "0x04000000" "$dts" 2>/dev/null; then
+    if [[ -f "$dts" ]] && ! grep -q "0x04000000" "$dts" 2>/dev/null; then
         sed -i '/nss\|reserved/{s/reg = <0x0 0x4ab00000 0x0 0x[0-9a-f]\+>/reg = <0x0 0x4ab00000 0x0 0x04000000>/}' "$dts" 2>/dev/null || true
-        green "DTS patched: $dts"
+        green "DTS 补丁完成: $dts"
         break
     fi
 done
 
 # ============================================
-# 4. 插件拉取（HomeProxy 替代 PassWall）
+# 4. 插件拉取
 # ============================================
 green "====4 Plugins===="
 
-rm -rf feeds/luci/applications/luci-app-argon-config 2>/dev/null || true
-rm -rf feeds/luci/themes/luci-theme-argon 2>/dev/null || true
-rm -rf feeds/luci/applications/luci-app-frpc 2>/dev/null || true
-rm -rf feeds/luci/applications/luci-app-frps 2>/dev/null || true
+rm -rf \
+    feeds/luci/applications/luci-app-argon-config \
+    feeds/luci/themes/luci-theme-argon \
+    feeds/luci/applications/luci-app-frpc \
+    feeds/luci/applications/luci-app-frps 2>/dev/null || true
 
 clone_repo() {
     local repo_url="$1"
     local target_dir="$2"
     local name="$3"
-    if [ -d "$target_dir/.git" ] || [ -f "$target_dir/Makefile" ]; then
-        green "  ✓ $name exists, skip clone"
+    if [[ -d "$target_dir" && ( -d "$target_dir/.git" || -f "$target_dir/Makefile" ) ]]; then
+        green "  ✓ $name 已存在，跳过克隆"
         return 0
     fi
-    if git clone --depth=1 --single-branch "$repo_url" "$target_dir" 2>/dev/null; then
-        green "  ✓ $name cloned"
+    if timeout 120 git clone --depth=1 --single-branch "$repo_url" "$target_dir" 2>/dev/null; then
+        green "  ✓ $name 克隆成功"
     else
-        yellow "  ✗ $name clone failed"
+        yellow "  ✗ $name 克隆失败"
     fi
-    return 0
 }
 
 clone_repo "https://github.com/jerrykuku/luci-theme-argon"       "feeds/luci/themes/luci-theme-argon"          "argon-theme"
@@ -212,9 +180,9 @@ clone_repo "https://github.com/jerrykuku/luci-app-argon-config"  "feeds/luci/app
 clone_repo "https://github.com/gdy666/luci-app-lucky"            "package/luci-app-lucky"                      "lucky"
 clone_repo "https://github.com/destan19/OpenAppFilter.git"       "package/OpenAppFilter"                       "OAF"
 
-if [ ! -d feeds/luci/applications/luci-app-frpc ] && [ ! -d package/luci-app-frpc ]; then
+if [[ ! -d feeds/luci/applications/luci-app-frpc && ! -d package/luci-app-frpc ]]; then
     clone_repo "https://github.com/laipeng668/luci" "feeds/_tmpfrp" "frp"
-    if [ -d feeds/_tmpfrp/applications/luci-app-frpc ]; then
+    if [[ -d feeds/_tmpfrp/applications/luci-app-frpc ]]; then
         mv feeds/_tmpfrp/applications/luci-app-frpc feeds/luci/applications/ 2>/dev/null || true
         mv feeds/_tmpfrp/applications/luci-app-frps feeds/luci/applications/ 2>/dev/null || true
     fi
@@ -222,27 +190,19 @@ if [ ! -d feeds/luci/applications/luci-app-frpc ] && [ ! -d package/luci-app-frp
 fi
 
 # ============================================
-# 5. NSS 驱动内核兼容补丁
+# 5. NSS 驱动适配
 # ============================================
 green "====5 NSS Adapt===="
 NSS_DIRS=$(find feeds package -maxdepth 4 -type d \( -name "qca-nss*" -o -name "qca-ssdk" \) 2>/dev/null | grep -v ppe || true)
 
-if [ -n "$NSS_DIRS" ]; then
-    for f in $(find $NSS_DIRS -name "*.c" -o -name "*.h" 2>/dev/null || true); do
+if [[ -n "$NSS_DIRS" ]]; then
+    find $NSS_DIRS \( -name "*.c" -o -name "*.h" \) 2>/dev/null | while read -r f; do
         [ ! -f "${f}.bak" ] && cp "$f" "${f}.bak" 2>/dev/null || true
-        if grep -q "setup_timer" "$f" 2>/dev/null; then
-            sed -i 's/setup_timer(\(&[^,]*\), \([^,]*\), \([^)]*\))/timer_setup(\1, \2, 0)/g' "$f" 2>/dev/null || true
-            perl -i -0pe 's/setup_timer\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*[^)]+\s*\)/timer_setup($1, $2, 0)/gs' "$f" 2>/dev/null || true
-        fi
-        if grep -q "netif_napi_add" "$f" 2>/dev/null; then
-            sed -i 's/netif_napi_add(\([^,]*\), \([^,]*\), \([^,]*\), [0-9]*)/netif_napi_add(\1, \2, \3)/g' "$f" 2>/dev/null || true
-        fi
+        sed -i 's/setup_timer(\(&[^,]*\), \([^,]*\), \([^)]*\))/timer_setup(\1, \2, 0)/g' "$f" 2>/dev/null || true
+        sed -i 's/netif_napi_add(\([^,]*\), \([^,]*\), \([^,]*\), [0-9]*)/netif_napi_add(\1, \2, \3)/g' "$f" 2>/dev/null || true
     done
-    for mk in $(find $NSS_DIRS -name "Makefile" 2>/dev/null || true); do
-        if grep -q "KERNEL_PATCHVER" "$mk" 2>/dev/null; then
-            sed -i "s/KERNEL_PATCHVER:=6\.[0-9]*/KERNEL_PATCHVER:=$KERNEL_VER/g" "$mk" 2>/dev/null || true
-        fi
-    done
+
+    find $NSS_DIRS -name "Makefile" 2>/dev/null | xargs -r sed -i "s/KERNEL_PATCHVER:=6\.[0-9]*/KERNEL_PATCHVER:=$KERNEL_VER/g" 2>/dev/null || true
 fi
 
 # ============================================
@@ -253,7 +213,7 @@ green "====6 Startup Order===="
 optimize_start() {
     local file="$1"
     local start_num="$2"
-    [ ! -f "$file" ] || [ ! -w "$file" ] && return 0
+    [[ ! -f "$file" || ! -w "$file" ]] && return 0
     sed -i "s/START=[0-9]*/START=$start_num/" "$file" 2>/dev/null || true
     sed -i "s/USE_PROCD=.*/USE_PROCD=1/" "$file" 2>/dev/null || true
 }
@@ -284,39 +244,44 @@ for svc in "${SVC_LIST[@]}"; do
     optimize_start "$f" "$s"
 done
 
-green "启动顺序: SSDK(10) → NSS-DRV(11) → NSS-DP(12) → NSS-ECM(13) → 网络(20) → Zerotier(32) → 服务(40+) → odhcpd(42)"
+green "启动链: SSDK(10) → NSS-DRV(11) → NSS-DP(12) → NSS-ECM(13) → 网络(20) → 业务服务(32+)"
 
 # ============================================
-# 7. 编译补丁 + HomeProxy 规则
+# 7. 编译补丁 + HomeProxy 规则 + 主题修复
 # ============================================
 green "====7 Patches & HomeProxy Rules===="
+
 TS=$(find feeds/packages -maxdepth 3 -name "tailscale/Makefile" 2>/dev/null | head -1)
-[ -f "$TS" ] && grep -q "/files" "$TS" 2>/dev/null && sed -i '/\/files/d' "$TS" 2>/dev/null || true
+[[ -f "$TS" ]] && sed -i '/\/files/d' "$TS" 2>/dev/null || true
 
 RU=$(find feeds/packages -maxdepth 3 -name "rust/Makefile" 2>/dev/null | head -1)
-[ -f "$RU" ] && grep -q "ci-llvm=true" "$RU" 2>/dev/null && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" 2>/dev/null || true
+[[ -f "$RU" ]] && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" 2>/dev/null || true
 
-# 预置 HomeProxy 规则数据
-PKG_PATH="$OPENWRT_PATH/package/"
-if [ -d *"homeproxy"* ]; then
+if compgen -G "*homeproxy*" >/dev/null; then
     HP_RULE="surge"
     HP_PATH="homeproxy/root/etc/homeproxy"
-    rm -rf ./$HP_PATH/resources/*
-    git clone -q --depth=1 --single-branch --branch "release" "https://github.com/Loyalsoldier/surge-rules.git" ./$HP_RULE/
-    cd ./$HP_RULE/ && RES_VER=$(git log -1 --pretty=format:'%s' | grep -o "[0-9]*")
-    echo $RES_VER | tee china_ip4.ver china_ip6.ver china_list.ver gfw_list.ver
-    awk -F, '/^IP-CIDR,/{print $2 > "china_ip4.txt"} /^IP-CIDR6,/{print $2 > "china_ip6.txt"}' cncidr.txt
-    sed 's/^\.//g' direct.txt > china_list.txt ; sed 's/^\.//g' gfw.txt > gfw_list.txt
-    mv -f ./{china_*,gfw_list}.{ver,txt} ../$HP_PATH/resources/
-    cd .. && rm -rf ./$HP_RULE/
-    cd "$OPENWRT_PATH" && green "✅ homeproxy rules updated!"
+    rm -rf ./$HP_PATH/resources/* 2>/dev/null || true
+
+    if timeout 120 git clone -q --depth=1 --single-branch --branch "release" \
+        https://github.com/Loyalsoldier/surge-rules.git ./$HP_RULE/ 2>/dev/null; then
+        cd ./$HP_RULE/
+        RES_VER=$(git log -1 --pretty=format:'%s' | grep -o "[0-9]*" || echo "0")
+        echo "$RES_VER" | tee china_ip4.ver china_ip6.ver china_list.ver gfw_list.ver
+        awk -F, '/^IP-CIDR,/{print $2 > "china_ip4.txt"} /^IP-CIDR6,/{print $2 > "china_ip6.txt"}' cncidr.txt
+        sed 's/^\.//g' direct.txt > china_list.txt
+        sed 's/^\.//g' gfw.txt > gfw_list.txt
+        mv -f ./{china_*,gfw_list}.{ver,txt} ../$HP_PATH/resources/
+        cd "$OPENWRT_PATH"
+        green "✅ HomeProxy 规则更新完成"
+    fi
+    rm -rf ./$HP_RULE/ 2>/dev/null || true
 fi
 
-# Argon 主题修复
-if [ -d *"luci-theme-argon"* ]; then
-    cd ./luci-theme-argon/
+if compgen -G "*luci-theme-argon*" >/dev/null; then
+    cd ./luci-theme-argon/ 2>/dev/null || true
     sed -i "s/primary '.*'/primary '#31a1a1'/" ./luci-app-argon-config/root/etc/config/argon 2>/dev/null || true
-    cd "$OPENWRT_PATH" && green "✅ theme-argon fixed!"
+    cd "$OPENWRT_PATH"
+    green "✅ Argon 主题配色修复"
 fi
 
 # ============================================
@@ -375,10 +340,6 @@ EOF
 
 cat > package/base-files/files/etc/uci-defaults/92-network <<'EOF'
 #!/bin/sh
-# ============================================
-# 网络 + 防火墙 + IPv4/IPv6 全优配置（幂等版）
-# ============================================
-
 for s in $(uci show firewall 2>/dev/null | grep -E "Allow-IPv6|Allow-DHCPv6|Allow-ICMPv4|ZT-9993" | cut -d= -f1); do
     uci delete "$s" 2>/dev/null || true
 done
@@ -598,7 +559,7 @@ EOF
 chmod +x package/base-files/files/etc/hotplug.d/iface/99-wan-recover 2>/dev/null || true
 
 # ============================================
-# 10. 收尾
+# 10. 收尾配置
 # ============================================
 green "====10 Finalize===="
 ./scripts/feeds update -a 2>/dev/null || true
@@ -613,13 +574,12 @@ for key in \
 done
 
 green "========================================="
-green "  AX5 v9.6 Final Stable"
+green "  AX5 v9.6 Final Stable (Linux 6.12 Only)"
 green "  设备: 红米 AX5 / AX5 JDCloud (512M)"
-green "  Theme: Argon | IRQ: Auto"
-green "  NSS-DP: PHY 禁止过度管理"
+green "  Theme: Argon | IRQ: 自动调优"
+green "  NSS-DP: PHY 禁止过度管理 (防抖动)"
 green "  科学上网: HomeProxy (Sing-Box)"
-green "  IPv4: PPPoE + FullCone NAT + BBR"
-green "  IPv6: 完整支持 + 防火墙优化"
-green "  Kernel: $KERNEL_VER (上游自动适配)"
-green "  启动链: SSDK→NSS→网络→IPv6→服务"
+green "  网络: PPPoE + IPv4/IPv6 双栈 + FullCone + BBR"
+green "  内核: 固定 Linux 6.12"
+green "  守护进程: 内存/网络/NSS 自愈"
 green "========================================="
