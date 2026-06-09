@@ -84,7 +84,6 @@ jobs:
         sudo chown -R "$(id -u):$(id -g)" /mnt/openwrt
         cd /mnt/openwrt
         
-        # 仅在代理变量非空时设置代理
         if [ -n "${GIT_PROXY}" ] && [ "${GIT_PROXY}" != "null" ]; then
           git config http.proxy "${GIT_PROXY}"
           git config https.proxy "${GIT_PROXY}"
@@ -102,7 +101,6 @@ jobs:
           git clone --depth 1 -b "${{ inputs.repo_branch }}" "${{ inputs.repo_url }}" /mnt/openwrt
         fi
         
-        # 取消代理设置
         if [ -n "${GIT_PROXY}" ] && [ "${GIT_PROXY}" != "null" ]; then
           git config --unset http.proxy || true
           git config --unset https.proxy || true
@@ -114,8 +112,14 @@ jobs:
         VERSION_INFO="$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")"
         { echo "VERSION_INFO<<EOF"; echo "$VERSION_INFO"; echo "EOF"; } >> "$GITHUB_ENV"
         
-        # 修正内核版本检测
-        VERSION_KERNEL="$(grep -oP 'KERNEL_PATCHVER:=\K[0-9]+\.[0-9]+' target/linux/generic/Makefile 2>/dev/null || echo "6.6")"
+        # 内核版本检测（默认 6.12）
+        if [ -f "target/linux/generic/Makefile" ]; then
+          VERSION_KERNEL="$(grep -oP 'KERNEL_PATCHVER:=\K[0-9]+\.[0-9]+' target/linux/generic/Makefile 2>/dev/null)"
+        fi
+        if [ -z "$VERSION_KERNEL" ] && [ -f "include/kernel-version.mk" ]; then
+          VERSION_KERNEL="$(grep -oP 'LINUX_VERSION-\K[0-9]+\.[0-9]+' include/kernel-version.mk 2>/dev/null | head -1)"
+        fi
+        VERSION_KERNEL="${VERSION_KERNEL:-6.12}"
         echo "VERSION_KERNEL=${VERSION_KERNEL}" >> "$GITHUB_ENV"
         echo "✅ 源码: $(git log -1 --pretty=format:'%h') | 内核: $VERSION_KERNEL"
 
@@ -207,7 +211,6 @@ jobs:
     - name: Organize Files(整理文件)
       if: steps.compile.outputs.status == 'success'
       run: |
-        # 智能查找固件目录
         if [ -d "$OPENWRT_PATH/bin/targets/qualcommax/ipq60xx" ]; then
           cd "$OPENWRT_PATH/bin/targets/qualcommax/ipq60xx"
         elif [ -d "$OPENWRT_PATH/bin/targets/qualcommax" ]; then
