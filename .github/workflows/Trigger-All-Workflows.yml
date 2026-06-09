@@ -15,7 +15,7 @@ jobs:
       uses: ./.github/workflows/IPQ60XX-LibWrt.yml
 
     AX5-LibWrt:
-     uses: ./.github/workflows/AX5.yml
+     uses: ./.github/workflows/AX5-libwrt.yml
 
     IPQ807X-LibWrt:
       uses: ./.github/workflows/IPQ807X-LibWrt.yml
