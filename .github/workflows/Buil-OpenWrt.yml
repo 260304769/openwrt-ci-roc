@@ -49,103 +49,88 @@ defaults:
     shell: bash
 
 env:
-  
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   DIY_SCRIPT: scripts/AX5.sh
   TZ: Asia/Shanghai
 
 jobs:
   Build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 420
     concurrency:
-      group: openwrt-${{ inputs.artifact_prefix }}-${{ github.ref }}
+      group: openwrt-ax5-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
-    - name: Check Server Performance(检查服务器性能)
-      run: |
-        echo "警告⚠"
-        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU物理数量：$(grep "physical id" /proc/cpuinfo | sort | uniq | wc -l)"
-        echo -e "CPU核心信息：$(grep name /proc/cpuinfo | cut -f2 -d: | uniq -c) \n"
-        echo "--------------------------内存信息--------------------------"
-        echo "已安装内存详细信息："
-        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
-        echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)"
-        df -hT
-
-    - name: Initialization Environment(初始化环境)
+    - name: Initialize Environment(初始化环境)
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends)
+        echo "CPU: $(nproc)核 | 内存: $(free -h | awk '/^Mem:/{print $2}') | 磁盘: $(df -h / | awk 'NR==2{print $4}')"
+        sudo -E apt-get -y update -qq
+        sudo -E apt-get -y install $(curl -fsSL ophub.org/ubuntu2404-make-openwrt-depends) 2>&1 | tail -5
         sudo -E systemctl daemon-reload
         sudo timedatectl set-timezone "$TZ"
+        sudo sysctl -w fs.file-max=65536 vm.swappiness=10 2>/dev/null || true
 
     - name: Checkout(检出代码)
       uses: actions/checkout@v4
 
     - name: Clone Source Code(克隆源代码)
-      env:
-        REPO_URL: ${{ inputs.repo_url }}
-        REPO_BRANCH: ${{ inputs.repo_branch }}
-        KERNEL_FILE: ${{ inputs.kernel_file }}
       run: |
-        df -hT "$GITHUB_WORKSPACE"
         sudo mkdir -p /mnt/openwrt
         sudo chown -R "$(id -u):$(id -g)" /mnt/openwrt
-        git clone --depth 1 -b "$REPO_BRANCH" --single-branch "$REPO_URL" /mnt/openwrt
+        if [ -d /mnt/openwrt/.git ]; then
+          cd /mnt/openwrt
+          git fetch origin "$REPO_BRANCH" --depth=1 2>/dev/null || { rm -rf /mnt/openwrt; git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" /mnt/openwrt; }
+          git reset --hard "origin/$REPO_BRANCH" 2>/dev/null || true
+          git clean -fd 2>/dev/null || true
+        else
+          git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" /mnt/openwrt
+        fi
         cd /mnt/openwrt
         echo "OPENWRT_PATH=$PWD" >> "$GITHUB_ENV"
         VERSION_INFO="$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")"
-        {
-          echo "VERSION_INFO<<EOF"
-          echo "$VERSION_INFO"
-          echo "EOF"
-        } >> "$GITHUB_ENV"
-        VERSION_KERNEL="$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' "target/linux/generic/$KERNEL_FILE" | head -n 1 || true)"
-        echo "VERSION_KERNEL=${VERSION_KERNEL:-unknown}" >> "$GITHUB_ENV"
+        { echo "VERSION_INFO<<EOF"; echo "$VERSION_INFO"; echo "EOF"; } >> "$GITHUB_ENV"
+        VERSION_KERNEL="$(grep -oP 'LINUX_VERSION-\d+\.\d+=\K.*' include/kernel-version.mk 2>/dev/null || echo "6.12")"
+        echo "VERSION_KERNEL=${VERSION_KERNEL}" >> "$GITHUB_ENV"
+        echo "✅ 源码: $(git log -1 --pretty=format:'%h') | 内核: $VERSION_KERNEL"
 
-    - name: Generate Variables(生成变量)
-      env:
-        REPO_URL: ${{ inputs.repo_url }}
-        REPO_BRANCH: ${{ inputs.repo_branch }}
-        CONFIG_FILE: ${{ inputs.config_file }}
+    - name: Generate Variables(加载配置并去重)
+      id: config
       run: |
-        cp "$GITHUB_WORKSPACE/$CONFIG_FILE" "$OPENWRT_PATH/.config"
         cd "$OPENWRT_PATH"
+        cat "$GITHUB_WORKSPACE/$CONFIG_FILE" > .config
+        sed -i 's/^# \(CONFIG_[A-Za-z0-9_-]*\) is not set/\1=n/' .config
+        awk -F'=' '!seen[$1]++' .config > .config.tmp && mv .config.tmp .config
         make defconfig > /dev/null 2>&1
-        SOURCE_REPO="${REPO_URL##*/}"
-        SOURCE_REPO="${SOURCE_REPO%.git}"
+        SOURCE_REPO="${REPO_URL##*/}"; SOURCE_REPO="${SOURCE_REPO%.git}"
         DEVICE_TARGET="$(awk -F '"' '/CONFIG_TARGET_BOARD/ {print $2; exit}' .config)"
         DEVICE_SUBTARGET="$(awk -F '"' '/CONFIG_TARGET_SUBTARGET/ {print $2; exit}' .config)"
-        HASH="$(git log -1 --pretty=format:'%h')"
-        CACHE_PREFIX="${SOURCE_REPO}-${REPO_BRANCH}-${DEVICE_TARGET}-${DEVICE_SUBTARGET}"
-        CACHE_KEY="${CACHE_PREFIX}-${HASH}"
-        {
-          echo "SOURCE_REPO=$SOURCE_REPO"
-          echo "DEVICE_TARGET=$DEVICE_TARGET"
-          echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET"
-          echo "HASH=$HASH"
-          echo "CACHE_PREFIX=$CACHE_PREFIX"
-          echo "CACHE_KEY=$CACHE_KEY"
-        } >> "$GITHUB_ENV"
+        SHORT_HASH="$(git log -1 --pretty=format:'%h')"
+        DEVICE_COUNT="2"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> "$GITHUB_ENV"
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> "$GITHUB_ENV"
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> "$GITHUB_ENV"
+        echo "SHORT_HASH=$SHORT_HASH" >> "$GITHUB_ENV"
+        echo "device_count=$DEVICE_COUNT" >> "$GITHUB_OUTPUT"
+        echo "  目标: $DEVICE_TARGET / $DEVICE_SUBTARGET ($DEVICE_COUNT 个设备)"
 
     - name: Cache Toolchain(缓存工具链)
+      id: cache
       uses: actions/cache@v4
       with:
-        key: ${{ env.CACHE_KEY }}
+        key: ax5-${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.SHORT_HASH }}
         restore-keys: |
-          ${{ env.CACHE_PREFIX }}-
+          ax5-${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+          ax5-${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-
         path: |
           ${{ env.OPENWRT_PATH }}/.ccache
           ${{ env.OPENWRT_PATH }}/staging_dir
+          ${{ env.OPENWRT_PATH }}/dl
 
-    - name: Refresh The Cache(刷新缓存)
+    - name: Refresh Cache Timestamps(刷新缓存时间戳)
+      if: steps.cache.outputs.cache-hit == 'true'
       run: |
         if [ -d "$OPENWRT_PATH/staging_dir" ]; then
           find "$OPENWRT_PATH/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r dir; do
@@ -156,115 +141,99 @@ jobs:
     - name: Install Feeds(安装feeds)
       run: |
         cd "$OPENWRT_PATH"
-        ./scripts/feeds update -a
+        for i in 1 2 3; do ./scripts/feeds update -a && break || sleep 8; done
         ./scripts/feeds install -a
 
-    - name: Load Custom Configuration(加载自定义配置)
+    - name: Load Custom Configuration(执行自定义脚本)
       run: |
-        chmod +x "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        SCRIPT="$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        chmod +x "$SCRIPT"
         cd "$OPENWRT_PATH"
-        "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        bash "$SCRIPT"
 
-    - name: Download DL Package(下载DL软件包)
-      env:
-        CONFIG_FILE: ${{ inputs.config_file }}
+    - name: Download Dependencies(下载依赖)
       run: |
-        cat "$GITHUB_WORKSPACE/$CONFIG_FILE" "$GITHUB_WORKSPACE/$GENERAL_CONFIG_FILE" > "$OPENWRT_PATH/.config"
         cd "$OPENWRT_PATH"
-        if [ "${{ inputs.remove_sqm_scripts_nss }}" = "true" ]; then
-          sed -i '/CONFIG_PACKAGE_sqm-scripts-nss=y/d' .config
-        fi
-        make defconfig
-        make download -j"$(nproc)"
+        for i in 1 2 3; do make download -j"$(nproc)" V=s 2>&1 | tail -10 && break || sleep 10; done
 
     - name: Compile Firmware(开始编译固件)
       id: compile
       run: |
         cd "$OPENWRT_PATH"
-        echo -e "$(nproc) thread compile"
-        make -j"$(nproc)" || make -j1 || make -j1 V=s
+        echo "编译线程: $(nproc) | 设备数量: ${{ steps.config.outputs.device_count }}"
+        make -j"$(nproc)" V=s 2>&1 | tee /tmp/build.log
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+          echo "编译失败"; grep -i "error\|failed" /tmp/build.log | tail -20
+          if grep -q "Cannot allocate memory\|virtual memory exhausted" /tmp/build.log 2>/dev/null; then
+            make -j1 V=s 2>&1 | tail -50
+          else
+            make -j1 V=s 2>&1 | tail -50
+          fi
+        fi
         echo "status=success" >> "$GITHUB_OUTPUT"
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> "$GITHUB_ENV"
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> "$GITHUB_ENV"
 
     - name: Check Space Usage(检查空间使用情况)
       if: (!cancelled())
-      run: df -hT
+      run: df -hT /mnt/openwrt
 
     - name: Organize Files(整理文件)
       if: steps.compile.outputs.status == 'success'
-      env:
-        ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
-        MANIFEST_FILE: ${{ inputs.manifest_file }}
       run: |
-        cd "$OPENWRT_PATH"/bin/targets/*/*
-        cp "$OPENWRT_PATH/.config" "$ARTIFACT_PREFIX.config"
-        mv config.buildinfo "$ARTIFACT_PREFIX.config.buildinfo"
-        mv "$MANIFEST_FILE" "$ARTIFACT_PREFIX.manifest"
-        mv -f "$OPENWRT_PATH"/bin/packages/*/*/*.apk packages
-        tar -zcf "$ARTIFACT_PREFIX.Packages.tar.gz" packages
-        if [ "${{ inputs.rename_qualcommax_to_nowifi }}" = "true" ]; then
-          for file in *qualcommax*.bin; do
-            [ -e "$file" ] || continue
-            mv "$file" "${file//qualcommax/nowifi}"
-          done
-        fi
-        rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json
+        cd "$OPENWRT_PATH"/bin/targets/qualcommax/ipq60xx 2>/dev/null || \
+        cd "$OPENWRT_PATH"/bin/targets/*/* 2>/dev/null || true
+        echo "当前目录: $(pwd)"
+        echo "固件列表:"
+        find . -name "*.ubi" -o -name "*.bin" | sort
+        ls -lah
+        
+        cp "$OPENWRT_PATH/.config" AX5.config 2>/dev/null || true
+        cp config.buildinfo AX5.buildinfo 2>/dev/null || true
+        ls *.manifest 2>/dev/null | head -1 | xargs -I{} cp {} AX5.manifest 2>/dev/null || true
+        
+        mkdir -p packages
+        find "$OPENWRT_PATH"/bin/packages -name "*.apk" -o -name "*.ipk" 2>/dev/null | head -500 | while read p; do cp "$p" packages/ 2>/dev/null || true; done
+        [ "$(ls -A packages 2>/dev/null)" ] && tar -zcf AX5.Packages.tar.gz packages
+        rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json 2>/dev/null || true
+        
         echo "FIRMWARE_PATH=$PWD" >> "$GITHUB_ENV"
+        echo "===== 发布文件 ====="
+        ls -lah
 
     - name: Upload Firmware To Release(发布固件)
       if: steps.compile.outputs.status == 'success'
       uses: ncipollo/release-action@v1
       with:
-        name: ${{ env.DATE }} for ${{ inputs.firmware_tag }}
+        name: ${{ env.DATE }} for AX5
         allowUpdates: true
-        tag: ${{ inputs.firmware_tag }}
+        tag: AX5
         token: ${{ github.token }}
         artifacts: ${{ env.FIRMWARE_PATH }}/*
         body: |
-          **This is OpenWrt Firmware for ${{ inputs.firmware_tag }}**
-          ### 📒 固件信息
-          - ${{ inputs.release_summary }}
-          - 💻 这是 ${{ inputs.firmware_tag }} 平台使用的 OpenWrt 固件
-          - ⚽ 固件源码: ${{ inputs.repo_url }}
-          - 💝 源码分支: ${{ inputs.repo_branch }}
-          - 🌐 默认地址: **192.168.10.1**
-          - 🔑 默认密码: none
-          ### 🧊 固件版本
-          - 固件内核版本：**${{ env.VERSION_KERNEL }}**
-          - 固件编译前最后一次➦[主源码](${{ inputs.repo_url }})更新记录
+          **OpenWrt for 红米 AX5**
+          - ✅ NSS 全加速 | ${{ env.VERSION_KERNEL }} 内核
+          - ✅ PPPoE IPv4 + FullCone NAT + BBR
+          - ✅ IPv6 完整支持 | 防火墙优化
+          - ✅ PassWall + Zerotier + FRP + Lucky
+          - 🌐 192.168.10.1 | 密码: 无
+          - 内核: **${{ env.VERSION_KERNEL }}**
           - ${{ env.VERSION_INFO }}
 
-    - name: Delete Old Cache(删除旧缓存)
+    - name: Delete Old Releases(删除旧Release)
       if: steps.compile.outputs.status == 'success'
+      run: |
+        gh release list --limit 100 --json tagName,name | jq -r '.[].tagName' | grep "AX5" | tail -n +4 | while read tag; do
+          gh release delete "$tag" --yes --cleanup-tag || true
+        done
       env:
         GH_TOKEN: ${{ github.token }}
-      run: |
-        gh cache list --key "${CACHE_PREFIX}-" --json key --jq '.[].key' |
-          while read -r key; do
-            [ -n "$key" ] || continue
-            if [ "$key" != "$CACHE_KEY" ]; then
-              gh cache delete "$key" || true
-            fi
-          done
-        echo "========cache status========"
-        if [ -d "$OPENWRT_PATH/.ccache" ]; then
-          echo "ccache: $(du -sh "$OPENWRT_PATH/.ccache" | cut -f 1)"
-        fi
-        if [ -d "$OPENWRT_PATH/staging_dir" ]; then
-          echo "staging: $(du -sh "$OPENWRT_PATH/staging_dir" | cut -f 1)"
-        fi
 
-    - name: Delete Old Workflows(删除旧工作流)
-      if: ${{ inputs.delete_old_workflows }}
+    - name: Delete Old Cache(删除旧缓存)
+      if: always() && !cancelled()
+      run: |
+        gh cache list --limit 100 --json id,key,lastAccessedAt 2>/dev/null | jq -r 'sort_by(.lastAccessedAt) | reverse | .[3:] | .[].id' 2>/dev/null | while read id; do
+          [ -n "$id" ] && gh cache delete "$id" --repo ${{ github.repository }} || true
+        done
+        du -sh "$OPENWRT_PATH/.ccache" "$OPENWRT_PATH/staging_dir" "$OPENWRT_PATH/dl" 2>/dev/null || true
       env:
         GH_TOKEN: ${{ github.token }}
-      run: |
-        cutoff="$(date -u -d '2 days ago' +%s)"
-        gh run list --limit 100 --json databaseId,createdAt,status --jq '.[] | select(.status != "in_progress" and .status != "queued") | [.databaseId, .createdAt] | @tsv' |
-          while IFS=$'\t' read -r run_id created_at; do
-            run_ts="$(date -u -d "$created_at" +%s)"
-            if [ "$run_ts" -lt "$cutoff" ]; then
-              gh run delete "$run_id"
-            fi
-          done
