@@ -54,6 +54,8 @@ env:
   TZ: Asia/Shanghai
   # 代理配置（需要时取消注释并填写实际地址）
   # GIT_PROXY: http://127.0.0.1:7890
+  # 统一编译目录（替换原 /mnt/openwrt）
+  OPENWRT_DIR: ${{ github.workspace }}/openwrt
 
 jobs:
   Build:
@@ -78,11 +80,31 @@ jobs:
     - name: Checkout(检出代码)
       uses: actions/checkout@v4
 
+    # 新增：执行三个开关逻辑
+    - name: Execute Custom Toggle Scripts
+      run: |
+        # 1. 删除旧工作流
+        if [ "${{ inputs.delete_old_workflows }}" = "true" ]; then
+          rm -rf .github/workflows/*.yml 2>/dev/null || true
+          echo "✅ 已删除旧工作流文件"
+        fi
+
+        # 2. 移除 SQM + NSS 相关脚本
+        if [ "${{ inputs.remove_sqm_scripts_nss }}" = "true" ]; then
+          rm -rf package/feeds/nss_packages luci-app-sqm sqm-scripts 2>/dev/null || true
+          echo "✅ 已移除 SQM 与 NSS 脚本"
+        fi
+
+        # 3. qualcommax 重命名为 nowifi
+        if [ "${{ inputs.rename_qualcommax_to_nowifi }}" = "true" ]; then
+          find target/ -name "*qualcommax*" -exec rename 's/qualcommax/nowifi/' {} \; 2>/dev/null || true
+          echo "✅ 已将 qualcommax 重命名为 nowifi"
+        fi
+
     - name: Clone Source Code(克隆源代码)
       run: |
-        sudo mkdir -p /mnt/openwrt
-        sudo chown -R "$(id -u):$(id -g)" /mnt/openwrt
-        cd /mnt/openwrt
+        mkdir -p "${{ env.OPENWRT_DIR }}"
+        cd "${{ env.OPENWRT_DIR }}"
         
         if [ -n "${GIT_PROXY}" ] && [ "${GIT_PROXY}" != "null" ]; then
           git config http.proxy "${GIT_PROXY}"
@@ -90,15 +112,15 @@ jobs:
           echo "✅ 已设置 Git 代理: ${GIT_PROXY}"
         fi
         
-        if [ -d /mnt/openwrt/.git ]; then
+        if [ -d .git ]; then
           git fetch origin "${{ inputs.repo_branch }}" --depth=1 2>/dev/null || { 
-            rm -rf /mnt/openwrt
-            git clone --depth 1 -b "${{ inputs.repo_branch }}" "${{ inputs.repo_url }}" /mnt/openwrt
+            rm -rf ./*
+            git clone --depth 1 -b "${{ inputs.repo_branch }}" "${{ inputs.repo_url }}" .
           }
           git reset --hard "origin/${{ inputs.repo_branch }}" 2>/dev/null || true
           git clean -fd 2>/dev/null || true
         else
-          git clone --depth 1 -b "${{ inputs.repo_branch }}" "${{ inputs.repo_url }}" /mnt/openwrt
+          git clone --depth 1 -b "${{ inputs.repo_branch }}" "${{ inputs.repo_url }}" .
         fi
         
         if [ -n "${GIT_PROXY}" ] && [ "${GIT_PROXY}" != "null" ]; then
@@ -107,7 +129,6 @@ jobs:
           echo "✅ 已取消 Git 代理"
         fi
         
-        cd /mnt/openwrt
         echo "OPENWRT_PATH=$PWD" >> "$GITHUB_ENV"
         VERSION_INFO="$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")"
         { echo "VERSION_INFO<<EOF"; echo "$VERSION_INFO"; echo "EOF"; } >> "$GITHUB_ENV"
@@ -206,7 +227,7 @@ jobs:
 
     - name: Check Space Usage(检查空间使用情况)
       if: (!cancelled())
-      run: df -hT /mnt/openwrt
+      run: df -hT "${{ env.OPENWRT_DIR }}"
 
     - name: Organize Files(整理文件)
       if: steps.compile.outputs.status == 'success'
