@@ -10,21 +10,25 @@ permissions:
   actions: write
 
 jobs:
+  IPQ60XX-LibWrt:
+    uses: ./.github/workflows/IPQ60XX-LibWrt.yml
 
-    IPQ60XX-LibWrt:
-      uses: ./.github/workflows/IPQ60XX-LibWrt.yml
+  AX5-LibWrt:
+    needs: IPQ60XX-LibWrt
+    uses: ./.github/workflows/AX5-libwrt.yml
 
-    AX5-LibWrt:
-     uses: ./.github/workflows/AX5-libwrt.yml
+  IPQ807X-LibWrt:
+    needs: AX5-LibWrt
+    uses: ./.github/workflows/IPQ807X-LibWrt.yml
 
-    IPQ807X-LibWrt:
-      uses: ./.github/workflows/IPQ807X-LibWrt.yml
+  JDCloud-ImmortalWrt:
+    needs: IPQ807X-LibWrt
+    uses: ./.github/workflows/JDCloud-ImmortalWrt.yml
 
-    JDCloud-ImmortalWrt:
-      uses: ./.github/workflows/JDCloud-ImmortalWrt.yml
+  JDCloud-NoWiFi-ImmortalWrt:
+    needs: JDCloud-ImmortalWrt
+    uses: ./.github/workflows/JDCloud-NoWiFi-ImmortalWrt.yml
 
-    JDCloud-NoWiFi-ImmortalWrt:
-      uses: ./.github/workflows/JDCloud-NoWiFi-ImmortalWrt.yml
-
-    x86-64-ImmortalWrt:
-      uses: ./.github/workflows/x86-64-ImmortalWrt.yml
+  x86-64-ImmortalWrt:
+    needs: JDCloud-NoWiFi-ImmortalWrt
+    uses: ./.github/workflows/x86-64-ImmortalWrt.yml
