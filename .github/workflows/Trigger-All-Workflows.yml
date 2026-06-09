@@ -3,7 +3,7 @@ name: Trigger-All-Workflows
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 18 * * 5"
+    - cron: "0 21 * * 5"
 
 permissions:
   contents: write
@@ -13,6 +13,9 @@ jobs:
 
     IPQ60XX-LibWrt:
       uses: ./.github/workflows/IPQ60XX-LibWrt.yml
+
+    AX5-LibWrt:
+     uses: ./.github/workflows/AX5.yml
 
     IPQ807X-LibWrt:
       uses: ./.github/workflows/IPQ807X-LibWrt.yml
