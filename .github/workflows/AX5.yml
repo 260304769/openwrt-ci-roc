@@ -1,0 +1,28 @@
+name: Ax5-libwrt
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  # schedule:
+  #   - cron: "0 20 * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  Build:
+    uses: ./.github/workflows/Build-OpenWrt.yml
+    permissions:
+      contents: write
+      actions: write
+    with:
+      repo_url: https://github.com/LiBwrt/openwrt-6.x.git
+      repo_branch: main-nss
+      config_file: configs/AX5.config
+      firmware_tag: AX5
+      kernel_file: kernel-6.12
+      artifact_prefix: IPQ60XX
+      manifest_file: libwrt-qualcommax-ipq60xx.manifest
+      release_summary: >-
+        这是开启全功能NSS的6.12内核固件，默认主题为Aurora；该固并添加了若干工具，具体详见AX5.config和General.config。
