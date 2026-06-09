@@ -49,6 +49,7 @@ defaults:
     shell: bash
 
 env:
+  GENERAL_CONFIG_FILE: configs/AX5.config
   DIY_SCRIPT: scripts/AX5.sh
   TZ: Asia/Shanghai
 
