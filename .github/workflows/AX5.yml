@@ -1,4 +1,4 @@
-name: Ax5-libwrt
+name: AX5-libwrt
 
 on:
   workflow_dispatch:
