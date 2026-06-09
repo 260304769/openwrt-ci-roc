@@ -3,12 +3,12 @@ set -eo pipefail
 
 # ============================================
 # AX5 Stable Build for LiBwrt/openwrt-6.x
-# 版本: v9.5 Final Stable
+# 版本: v9.6 Final Stable
 # 设备: 红米 AX5 / AX5 JDCloud (512M + WiFi)
 # 默认主题: Argon
 # IRQ: 自动调优 (RPS+RFS)
 # NSS-DP: PHY 禁止过度管理 (防抖动)
-# 科学上网: PassWall
+# 科学上网: HomeProxy (Sing-Box 内核)
 # 网络: PPPoE IPv4 + IPv6 双栈 + 防火墙优化
 # 上游同步: 自动兼容上游 NSS 内核更新
 # 适配: Ubuntu 24.04 + GitHub Actions Node.js 24
@@ -137,7 +137,6 @@ if [ -f .config ]; then
         "CONFIG_PACKAGE_kmod-qca-nss-ppe"
         "CONFIG_KERNEL_ZRAM_BACKEND_LZO"
         "CONFIG_PACKAGE_kmod-sched-cake"
-        "CONFIG_TARGET_PER_DEVICE_ROOTFS"
         "CONFIG_FEED_nss_packages"
         "CONFIG_TARGET_ROOTFS_INITRAMFS"
         "CONFIG_KERNEL_PREEMPT_RT"
@@ -147,6 +146,10 @@ if [ -f .config ]; then
         sed -i "/^${key}[= ]/d; /^# ${key} is not set/d" .config 2>/dev/null || true
         echo "# ${key} is not set" >> .config
     done
+    
+    # 强制保留关键配置
+    grep -q "^CONFIG_TARGET_PER_DEVICE_ROOTFS=y" .config || echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y" >> .config
+    grep -q "^CONFIG_TARGET_MULTI_PROFILE=y" .config || echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
     
     for kmod in iptunnel4 iptunnel6 ppp-async nf-conntrack6 nf-ipt6 nf-nat6; do
         sed -i "/CONFIG_PACKAGE_kmod-$kmod/d" .config 2>/dev/null || true
@@ -179,7 +182,7 @@ for dts in "${DTS_LIST[@]}"; do
 done
 
 # ============================================
-# 4. 插件拉取
+# 4. 插件拉取（HomeProxy 替代 PassWall）
 # ============================================
 green "====4 Plugins===="
 
@@ -187,8 +190,6 @@ rm -rf feeds/luci/applications/luci-app-argon-config 2>/dev/null || true
 rm -rf feeds/luci/themes/luci-theme-argon 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-frpc 2>/dev/null || true
 rm -rf feeds/luci/applications/luci-app-frps 2>/dev/null || true
-rm -rf feeds/luci/applications/luci-app-passwall 2>/dev/null || true
-rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} 2>/dev/null || true
 
 clone_repo() {
     local repo_url="$1"
@@ -219,10 +220,6 @@ if [ ! -d feeds/luci/applications/luci-app-frpc ] && [ ! -d package/luci-app-frp
     fi
     rm -rf feeds/_tmpfrp 2>/dev/null || true
 fi
-
-clone_repo "https://github.com/Openwrt-Passwall/openwrt-passwall-packages" "package/passwall-packages" "passwall-packages"
-clone_repo "https://github.com/Openwrt-Passwall/openwrt-passwall"          "package/luci-app-passwall"  "passwall"
-echo "baidu.com" > package/luci-app-passwall/luci-app-passwall/root/usr/share/passwall/rules/chnlist 2>/dev/null || true
 
 # ============================================
 # 5. NSS 驱动内核兼容补丁
@@ -290,14 +287,37 @@ done
 green "启动顺序: SSDK(10) → NSS-DRV(11) → NSS-DP(12) → NSS-ECM(13) → 网络(20) → Zerotier(32) → 服务(40+) → odhcpd(42)"
 
 # ============================================
-# 7. 编译补丁
+# 7. 编译补丁 + HomeProxy 规则
 # ============================================
-green "====7 Patches===="
+green "====7 Patches & HomeProxy Rules===="
 TS=$(find feeds/packages -maxdepth 3 -name "tailscale/Makefile" 2>/dev/null | head -1)
 [ -f "$TS" ] && grep -q "/files" "$TS" 2>/dev/null && sed -i '/\/files/d' "$TS" 2>/dev/null || true
 
 RU=$(find feeds/packages -maxdepth 3 -name "rust/Makefile" 2>/dev/null | head -1)
 [ -f "$RU" ] && grep -q "ci-llvm=true" "$RU" 2>/dev/null && sed -i 's/ci-llvm=true/ci-llvm=false/' "$RU" 2>/dev/null || true
+
+# 预置 HomeProxy 规则数据
+PKG_PATH="$OPENWRT_PATH/package/"
+if [ -d *"homeproxy"* ]; then
+    HP_RULE="surge"
+    HP_PATH="homeproxy/root/etc/homeproxy"
+    rm -rf ./$HP_PATH/resources/*
+    git clone -q --depth=1 --single-branch --branch "release" "https://github.com/Loyalsoldier/surge-rules.git" ./$HP_RULE/
+    cd ./$HP_RULE/ && RES_VER=$(git log -1 --pretty=format:'%s' | grep -o "[0-9]*")
+    echo $RES_VER | tee china_ip4.ver china_ip6.ver china_list.ver gfw_list.ver
+    awk -F, '/^IP-CIDR,/{print $2 > "china_ip4.txt"} /^IP-CIDR6,/{print $2 > "china_ip6.txt"}' cncidr.txt
+    sed 's/^\.//g' direct.txt > china_list.txt ; sed 's/^\.//g' gfw.txt > gfw_list.txt
+    mv -f ./{china_*,gfw_list}.{ver,txt} ../$HP_PATH/resources/
+    cd .. && rm -rf ./$HP_RULE/
+    cd "$OPENWRT_PATH" && green "✅ homeproxy rules updated!"
+fi
+
+# Argon 主题修复
+if [ -d *"luci-theme-argon"* ]; then
+    cd ./luci-theme-argon/
+    sed -i "s/primary '.*'/primary '#31a1a1'/" ./luci-app-argon-config/root/etc/config/argon 2>/dev/null || true
+    cd "$OPENWRT_PATH" && green "✅ theme-argon fixed!"
+fi
 
 # ============================================
 # 8. 系统预置 uci-defaults
@@ -359,8 +379,7 @@ cat > package/base-files/files/etc/uci-defaults/92-network <<'EOF'
 # 网络 + 防火墙 + IPv4/IPv6 全优配置（幂等版）
 # ============================================
 
-# ---------- 清理旧规则 ----------
-for s in $(uci show firewall 2>/dev/null | grep -E "Allow-IPv6|Allow-DHCPv6|Allow-ICMPv4|Allow-DHCPv4|Allow-IGMP|ZT-9993" | cut -d= -f1); do
+for s in $(uci show firewall 2>/dev/null | grep -E "Allow-IPv6|Allow-DHCPv6|Allow-ICMPv4|ZT-9993" | cut -d= -f1); do
     uci delete "$s" 2>/dev/null || true
 done
 for s in $(uci show firewall 2>/dev/null | grep "zerotier" | cut -d= -f1); do
@@ -368,7 +387,6 @@ for s in $(uci show firewall 2>/dev/null | grep "zerotier" | cut -d= -f1); do
 done
 uci commit firewall 2>/dev/null
 
-# ---------- WAN IPv4 优化 ----------
 if uci -q get network.wan >/dev/null 2>&1; then
     [ "$(uci -q get network.wan.proto)" = "pppoe" ] && {
         uci -q get network.wan.keepalive >/dev/null || uci set network.wan.keepalive='60 10'
@@ -377,7 +395,6 @@ if uci -q get network.wan >/dev/null 2>&1; then
     }
 fi
 
-# ---------- IPv6 WAN6 ----------
 if ! uci -q get network.wan6 >/dev/null 2>&1; then
     uci set network.wan6=interface
     uci set network.wan6.proto='dhcpv6'
@@ -387,15 +404,10 @@ if ! uci -q get network.wan6 >/dev/null 2>&1; then
     uci commit network 2>/dev/null
 fi
 
-# ---------- 防火墙基础 ----------
-uci set firewall.@defaults[0].input='ACCEPT' 2>/dev/null || true
-uci set firewall.@defaults[0].output='ACCEPT' 2>/dev/null || true
-uci set firewall.@defaults[0].forward='ACCEPT' 2>/dev/null || true
 uci set firewall.@defaults[0].fullcone='1' 2>/dev/null || true
 uci set firewall.@defaults[0].flow_offloading='1' 2>/dev/null || true
 uci set firewall.@defaults[0].flow_offloading_hw='1' 2>/dev/null || true
 
-# ---------- IPv4 ICMP ----------
 if ! uci show firewall 2>/dev/null | grep -q "Allow-ICMPv4"; then
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-ICMPv4'
@@ -405,7 +417,6 @@ if ! uci show firewall 2>/dev/null | grep -q "Allow-ICMPv4"; then
     uci set firewall.@rule[-1].target='ACCEPT'
 fi
 
-# ---------- IPv6 ICMP ----------
 if ! uci show firewall 2>/dev/null | grep -q "Allow-IPv6-ICMP"; then
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-IPv6-ICMP'
@@ -415,7 +426,6 @@ if ! uci show firewall 2>/dev/null | grep -q "Allow-IPv6-ICMP"; then
     uci set firewall.@rule[-1].target='ACCEPT'
 fi
 
-# ---------- DHCPv6 ----------
 if ! uci show firewall 2>/dev/null | grep -q "Allow-DHCPv6"; then
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-DHCPv6'
@@ -427,7 +437,6 @@ if ! uci show firewall 2>/dev/null | grep -q "Allow-DHCPv6"; then
     uci set firewall.@rule[-1].target='ACCEPT'
 fi
 
-# ---------- Zerotier ----------
 if ! uci show firewall 2>/dev/null | grep -q "name='zerotier'"; then
     uci add firewall zone
     uci set firewall.@zone[-1].name='zerotier'
@@ -436,15 +445,12 @@ if ! uci show firewall 2>/dev/null | grep -q "name='zerotier'"; then
     uci set firewall.@zone[-1].output='ACCEPT'
     uci set firewall.@zone[-1].forward='ACCEPT'
     uci set firewall.@zone[-1].masq='1'
-    
     uci add firewall forwarding
     uci set firewall.@forwarding[-1].src='lan'
     uci set firewall.@forwarding[-1].dest='zerotier'
-    
     uci add firewall forwarding
     uci set firewall.@forwarding[-1].src='zerotier'
     uci set firewall.@forwarding[-1].dest='lan'
-    
     uci add firewall rule
     uci set firewall.@rule[-1].name='ZT-9993-UDP'
     uci set firewall.@rule[-1].src='wan'
@@ -452,17 +458,13 @@ if ! uci show firewall 2>/dev/null | grep -q "name='zerotier'"; then
     uci set firewall.@rule[-1].dest_port='9993'
     uci set firewall.@rule[-1].target='ACCEPT'
 fi
-
 uci commit firewall 2>/dev/null
 
-# ---------- DHCP/DNS ----------
 uci -q get dhcp.@dnsmasq[0].cachesize >/dev/null || uci set dhcp.@dnsmasq[0].cachesize='2000'
 uci -q get dhcp.@dnsmasq[0].dnsforwardmax >/dev/null || uci set dhcp.@dnsmasq[0].dnsforwardmax='512'
 uci set dhcp.@dnsmasq[0].filter_aaaa='0' 2>/dev/null || true
-uci set dhcp.@dnsmasq[0].noresolv='0' 2>/dev/null || true
 uci commit dhcp 2>/dev/null
 
-# ---------- ECM NSS ----------
 if uci -q get ecm >/dev/null 2>&1; then
     uci -q get ecm.@global[0].acceleration_engine >/dev/null || uci set ecm.@global[0].acceleration_engine='nss'
     uci -q get ecm.@global[0].preload_mode >/dev/null || uci set ecm.@global[0].preload_mode='full'
@@ -611,11 +613,11 @@ for key in \
 done
 
 green "========================================="
-green "  AX5 v9.5 Final Stable"
+green "  AX5 v9.6 Final Stable"
 green "  设备: 红米 AX5 / AX5 JDCloud (512M)"
 green "  Theme: Argon | IRQ: Auto"
 green "  NSS-DP: PHY 禁止过度管理"
-green "  PassWall: 科学上网"
+green "  科学上网: HomeProxy (Sing-Box)"
 green "  IPv4: PPPoE + FullCone NAT + BBR"
 green "  IPv6: 完整支持 + 防火墙优化"
 green "  Kernel: $KERNEL_VER (上游自动适配)"
