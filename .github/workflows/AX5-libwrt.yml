@@ -25,4 +25,10 @@ jobs:
       artifact_prefix: IPQ60XX
       manifest_file: libwrt-qualcommax-ipq60xx.manifest
       release_summary: >-
-        这是开启全功能NSS的6.12内核固件，默认主题为Aurora；该固并添加了若干工具，具体详见AX5.config和General.config。
+        这是开启全功能NSS的6.12内核
+        # 默认主题: Argon
+        # IRQ: 自动调优 (RPS+RFS)
+        # NSS-DP: PHY 禁止过度管理 (防抖动)
+        # 科学上网: HomeProxy (Sing-Box 内核)
+        # 网络: PPPoE IPv4 + IPv6 双栈 + 防火墙优化
+        # 上游同步: 自动兼容上游 NSS 内核更新。
