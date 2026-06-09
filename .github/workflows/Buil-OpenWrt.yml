@@ -63,7 +63,7 @@ jobs:
       cancel-in-progress: false
 
     steps:
-    - name: Check Server Performance(检查服务器性能)
+    - name: Check Server Performance
       run: |
         echo "警告⚠ 服务器性能有限，插件较多时编译耗时会增加"
         echo "--------------------------CPU信息--------------------------"
@@ -76,7 +76,7 @@ jobs:
         echo "硬盘数量：$(ls /dev/sd* 2>/dev/null | grep -v [1-9] | wc -l)"
         df -hT
 
-    - name: Initialization Environment(初始化环境)
+    - name: Initialization Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -85,10 +85,10 @@ jobs:
         sudo -E systemctl daemon-reload
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Checkout(检出代码)
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Clone Source Code(克隆源代码)
+    - name: Clone Source Code
       env:
         REPO_URL: ${{ inputs.repo_url }}
         REPO_BRANCH: ${{ inputs.repo_branch }}
@@ -109,7 +109,7 @@ jobs:
         VERSION_KERNEL=$(sed -n 's/^LINUX_KERNEL_HASH-\([0-9.]*\).*/\1/p' "target/linux/generic/$KERNEL_FILE" | head -n 1 || true)
         echo "VERSION_KERNEL=${VERSION_KERNEL:-unknown}" >> "$GITHUB_ENV"
 
-    - name: Setup ccache(编译缓存加速)
+    - name: Setup ccache
       run: |
         echo "CCACHE_DIR=$OPENWRT_PATH/.ccache" >> $GITHUB_ENV
         echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
@@ -117,7 +117,7 @@ jobs:
         echo "CCACHE_MAXSIZE=10G" >> $GITHUB_ENV
         ccache -s
 
-    - name: Generate Variables(生成缓存变量)
+    - name: Generate Variables
       env:
         REPO_URL: ${{ inputs.repo_url }}
         REPO_BRANCH: ${{ inputs.repo_branch }}
@@ -139,5 +139,146 @@ jobs:
           echo "CACHE_KEY=$CACHE_KEY"
         } >> "$GITHUB_ENV"
 
-    - name: Cache Toolchain(缓存 dl/ccache/staging_dir)
-      uses
+    - name: Cache Toolchain
+      uses: actions/cache@v4
+      with:
+        key: ${{ env.CACHE_KEY }}
+        restore-keys: |
+          ${{ env.CACHE_PREFIX }}-
+        path: |
+          ${{ env.OPENWRT_PATH }}/.ccache
+          ${{ env.OPENWRT_PATH }}/staging_dir
+          ${{ env.OPENWRT_PATH }}/dl
+
+    - name: Refresh The Cache
+      run: |
+        if [ -d "$OPENWRT_PATH/staging_dir" ]; then
+          find "$OPENWRT_PATH/staging_dir" -path "*/stamp/*" ! -path "*target*" -type f -exec touch {} + || true
+        fi
+
+    - name: Install Feeds
+      run: |
+        cd "$OPENWRT_PATH"
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Load Custom Configuration
+      run: |
+        chmod +x "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+        cd "$OPENWRT_PATH"
+        "$GITHUB_WORKSPACE/$DIY_SCRIPT"
+
+    - name: Download DL Package
+      env:
+        CONFIG_FILE: ${{ inputs.config_file }}
+      run: |
+        if [ ! -f "$GITHUB_WORKSPACE/$CONFIG_FILE" ]; then
+          echo "❌ Error: Config file not found: $GITHUB_WORKSPACE/$CONFIG_FILE"
+          exit 1
+        fi
+        cp "$GITHUB_WORKSPACE/$CONFIG_FILE" "$OPENWRT_PATH/.config"
+        cd "$OPENWRT_PATH"
+        make defconfig
+        sed -i "s|https://downloads.openwrt.org|$OPENWRT_MIRROR|g" include/download.mk
+        sed -i "s|http://downloads.openwrt.org|$OPENWRT_MIRROR|g" include/download.mk
+        make download -j"$(nproc)" DOWNLOAD_FLAGS="--connect-timeout 30 --max-time 600 --retry 5"
+
+    - name: Compile Firmware
+      id: compile
+      run: |
+        cd "$OPENWRT_PATH"
+        echo "使用线程数: $(nproc)"
+        make tools/compile -j$(nproc)
+        make toolchain/compile -j$(nproc)
+        if ! make -j"$(nproc)"; then
+          echo "⚠️ 多线程编译失败，切换单核重试"
+          if ! make -j1; then
+            echo "❌ 编译失败，输出详细日志"
+            make -j1 V=s
+            exit 1
+          fi
+        fi
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> "$GITHUB_ENV"
+        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> "$GITHUB_ENV"
+
+    - name: Check Space Usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Organize Files
+      if: steps.compile.outputs.status == 'success'
+      env:
+        ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
+        MANIFEST_FILE: ${{ inputs.manifest_file }}
+      run: |
+        BIN_DIR="${OPENWRT_PATH}/bin/targets"
+        cd $(find "${BIN_DIR}" -maxdepth 3 -type d -name "*bin" -o -name "*img" | head -1) || cd "${BIN_DIR}"/*/*
+        cp "${OPENWRT_PATH}/.config" "${ARTIFACT_PREFIX}.config"
+        [ -f config.buildinfo ] && mv config.buildinfo "${ARTIFACT_PREFIX}.config.buildinfo"
+        [ -f "${MANIFEST_FILE}" ] && mv "${MANIFEST_FILE}" "${ARTIFACT_PREFIX}.manifest"
+        mkdir -p packages
+        mv -f "${OPENWRT_PATH}"/bin/packages/*/*/*.apk packages 2>/dev/null || true
+        tar -zcf "${ARTIFACT_PREFIX}.Packages.tar.gz" packages
+        if [ "${{ inputs.rename_qualcommax_to_nowifi }}" = "true" ]; then
+          for file in *qualcommax*.bin; do
+            [ -e "$file" ] && mv "$file" "${file//qualcommax/nowifi}"
+          done
+        fi
+        rm -rf packages feeds.buildinfo version.buildinfo sha256sums profiles.json
+        echo "FIRMWARE_PATH=$PWD" >> "$GITHUB_ENV"
+
+    - name: Upload Firmware To Release
+      if: steps.compile.outputs.status == 'success'
+      uses: ncipollo/release-action@v1
+      with:
+        name: ${{ env.DATE }} for ${{ inputs.firmware_tag }}
+        allowUpdates: true
+        tag: ${{ inputs.firmware_tag }}
+        token: ${{ github.token }}
+        artifacts: ${{ env.FIRMWARE_PATH }}/*
+        body: |
+          **This is OpenWrt Firmware for ${{ inputs.firmware_tag }}**
+          ### 📒 固件信息
+          - ${{ inputs.release_summary }}
+          - 💻 这是 ${{ inputs.firmware_tag }} 平台使用的 OpenWrt 固件
+          - ⚽ 固件源码: ${{ inputs.repo_url }}
+          - 💝 源码分支: ${{ inputs.repo_branch }}
+          - 🌐 默认地址: **192.168.10.1**
+          - 🔑 默认密码: none
+          ### 🧊 固件版本
+          - 固件内核版本：**${{ env.VERSION_KERNEL }}**
+          - 固件编译前最后一次➦[主源码](${{ inputs.repo_url }})更新记录
+          - ${{ env.VERSION_INFO }}
+
+    - name: Delete Old Cache
+      if: steps.compile.outputs.status == 'success'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh cache list --key "${CACHE_PREFIX}-" --json key --jq '.[].key' |
+          while read -r key; do
+            [ -n "$key" ] || continue
+            if [ "$key" != "$CACHE_KEY" ]; then
+              gh cache delete "$key" || true
+            fi
+          done
+        echo "========cache status========"
+        ccache -s
+        if [ -d "${OPENWRT_PATH}/staging_dir" ]; then
+          echo "staging: $(du -sh "${OPENWRT_PATH}/staging_dir" | cut -f 1)"
+        fi
+
+    - name: Delete Old Workflows
+      if: ${{ inputs.delete_old_workflows }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        cutoff="$(date -u -d '2 days ago' +%s)"
+        gh run list --limit 100 --json databaseId,createdAt,status --jq '.[] | select(.status != "in_progress" and .status != "queued") | [.databaseId, .createdAt] | @tsv' |
+          while IFS=$'\t' read -r run_id created_at; do
+            run_ts="$(date -u -d "$created_at" +%s)"
+            if [ "$run_ts" -lt "$cutoff" ]; then
+              gh run delete "$run_id" || true
+            fi
+          done
